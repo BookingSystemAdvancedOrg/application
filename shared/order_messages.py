@@ -48,7 +48,7 @@ _TEXT = {
         "cancelled.lead.gift": ("Tyvärr har restaurangen behövt avbryta din beställning. Hela beloppet, {amount}, "
                                 "förs tillbaka till ditt presentkort ****{last4}."),
         "cancelled.lead.split": ("Tyvärr har restaurangen behövt avbryta din beställning. Hela beloppet betalas "
-                                 "tillbaka: {card} {back} och {gift} till ditt presentkort ****{last4}."),
+                                 "tillbaka: {gift} till ditt presentkort ****{last4} och {card} {back}."),
         "refunded.subject": "Återbetalning för beställning #{number} - {restaurant}",
         "refunded.lead": "{restaurant} har betalat tillbaka {amount} för din beställning #{number}. {when}",
         # How the money goes back, by how the guest paid (shared/payment_methods.py).
@@ -107,7 +107,7 @@ _TEXT = {
         "cancelled.lead.gift": ("Unfortunately the restaurant has had to cancel your order. The full amount, "
                                 "{amount}, goes back to your gift card ****{last4}."),
         "cancelled.lead.split": ("Unfortunately the restaurant has had to cancel your order. The full amount is "
-                                 "refunded: {card} {back} and {gift} to your gift card ****{last4}."),
+                                 "refunded: {gift} to your gift card ****{last4} and {card} {back}."),
         "refunded.subject": "Refund for order #{number} - {restaurant}",
         "refunded.lead": "{restaurant} has refunded {amount} for your order #{number}. {when}",
         "back.card": "to your card within a few business days",
@@ -263,6 +263,29 @@ def _payment_rows(item, lang):
     if card > 0:
         rows.append((_stripe_label(item, lang), money(card)))
     return rows
+
+
+def staff_refund_failed(item, tenant_row, location, admin_url=None):
+    """(subject, text): the restaurant's e-mail when a refund came back
+    (refund.failed). No guest contact details: they are in admin."""
+    name = restaurant_name(tenant_row, location)
+    failed = [e for e in item.get("refundFailed") or [] if isinstance(e, dict)]
+    last = failed[-1] if failed else {}
+    amount = money(int(last.get("amount") or 0))
+    method = {"card": "kort", "apple_pay": "kort (Apple Pay)", "google_pay": "kort (Google Pay)",
+              "link": "kort"}.get(last.get("method")) or (
+        payment_methods.label({"method": last["method"]}) if last.get("method") else None)
+    number = item.get("number")
+    subject = f"Återbetalningen kom inte fram: beställning #{number} {item.get('date')} - {name}"
+    lines = [
+        f"Återbetalningen på {amount} för beställning #{number} ({item.get('date')})"
+        + (f" kom inte fram till gästens {method}." if method else " kom inte fram till gästen."),
+        "Pengarna är tillbaka på ert Stripe-saldo. Betala tillbaka till gästen på annat sätt, "
+        "till exempel med Swish eller kontant.",
+    ]
+    if admin_url:
+        lines += ["", f"Beställningar i admin: {admin_url.rstrip('/')}/bestallningar"]
+    return subject, "\n".join(lines)
 
 
 def sms(kind, item, tenant_row, location, link=None):

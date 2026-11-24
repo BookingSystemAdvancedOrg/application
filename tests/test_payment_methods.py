@@ -49,6 +49,7 @@ def test_labels():
 
 
 def test_lookup_reads_the_charge_on_the_connected_account_and_never_raises(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_ARN", "arn:aws:secretsmanager:eu-north-1:1:secret:k")
     calls = []
 
     def fake(method, path, params=None, *, account=None, idempotency_key=None, timeout=None):
@@ -65,6 +66,8 @@ def test_lookup_reads_the_charge_on_the_connected_account_and_never_raises(monke
 
     monkeypatch.setattr(stripe_client, "request", down)
     assert pm.lookup("acct_1", "pi_2") is None
+    monkeypatch.delenv("STRIPE_SECRET_ARN")
+    assert pm.lookup("acct_1", "pi_3") is None  # no platform key on this Lambda: skipped quietly
 
 
 # --- receipts and refund texts ------------------------------------------------------------------
@@ -111,7 +114,9 @@ def test_receipt_with_a_gift_card_names_the_method_of_the_rest():
 def test_refund_texts_follow_the_method(method, cancelled, refunded):
     item = {**ORDER, "paidWith": {"method": method}, "refund": {"amount": 30000}}
     text, _ = _mail("order_cancelled", item)
-    assert cancelled in text and "till ditt kort" not in text or method == "google_pay"
+    assert cancelled in text
+    if method != "google_pay":
+        assert "till ditt kort" not in text
     notice = {"type": "order_refunded", "amount": 5000}
     text, _ = _mail("order_refunded", {**item, "refund": {"amount": 5000, "notice": {"amount": 5000}},
                                        "notice": notice})
@@ -122,7 +127,7 @@ def test_english_swish_cancellation():
     item = {**ORDER, "language": "en", "paidWith": {"method": "swish"}, "refund": {"amount": 10000},
             "giftCard": {"last4": "4321", "debitedOre": 20000}}
     text, _ = _mail("order_cancelled", item)
-    assert "100 kr via Swish, usually within minutes and 200 kr to your gift card ****4321" in text
+    assert "200 kr to your gift card ****4321 and 100 kr via Swish, usually within minutes." in text
 
 
 def test_catering_refund_text_for_swish():
@@ -186,3 +191,15 @@ def test_a_failed_refund_back_on_the_stripe_balance_waits_on_the_obs_account():
         ("stripe", 25000, acc.T_REFUND_FAILED), ("unclassified", -25000, acc.T_REFUND_FAILED)}
     assert "Betala tillbaka till kunden på annat sätt" in event.warnings[0]
     assert charges == {}
+
+
+def test_the_restaurant_email_about_a_failed_refund_names_the_method_not_the_guest():
+    item = {**ORDER, "date": "2026-11-24", "customerEmail": "anna@example.se", "customerPhone": "+46701234567",
+            "refundFailed": [{"refundId": "re_1", "amount": 25000, "at": "2026-11-24T10:00:00Z", "method": "swish"}]}
+    subject, text = om.staff_refund_failed(item, TENANT, {}, "https://admin.booqy.se/")
+    assert subject == "Återbetalningen kom inte fram: beställning #7 2026-11-24 - Krogen"
+    assert "Återbetalningen på 250 kr för beställning #7 (2026-11-24) kom inte fram till gästens Swish." in text
+    assert "https://admin.booqy.se/bestallningar" in text
+    assert "anna@example.se" not in text and "4670" not in text
+    card = {**item, "refundFailed": [{"amount": 100, "method": "apple_pay"}]}
+    assert "gästens kort (Apple Pay)" in om.staff_refund_failed(card, TENANT, {})[1]

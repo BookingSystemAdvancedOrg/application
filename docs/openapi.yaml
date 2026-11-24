@@ -10941,6 +10941,11 @@ components:
           type: string
         paidWith:
           $ref: '#/components/schemas/PaidWith'
+        refundIssue:
+          type: boolean
+          description: >-
+            A refund came back to the restaurant (refund.failed); the
+            restaurant pays the guest back another way. No amounts.
         location:
           type: object
           properties:

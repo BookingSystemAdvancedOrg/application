@@ -70,7 +70,14 @@ that settles later); `unpaid` on completed waits.
 accepting it): Stripe puts the money back on the restaurant's balance. The
 refund stays recorded (the guest is still owed it), the failure is listed
 once per refund id in `refundFailed` with a `refund_failed` history entry,
-and admin tells staff to pay the guest back another way. The accounting
+admin tells staff to pay the guest back another way, and the
+`order_refund_failed` notice e-mails the restaurant (location e-mail, also
+with staff e-mails off: the order may be from another day than the one on
+the screen). The guest's status page gets `refundIssue: true` (no amounts)
+and says the restaurant pays back another way instead of naming the
+method. Stripe drops a failed refund from the charge's `amount_refunded`
+while Booqy keeps it (the guest is owed it), so `charge.refunded` adds the
+failed amounts back before comparing. The accounting
 export books the balance coming back (`refund_failure`) to the OBS account
 with the same advice. A Dashboard refund has no order metadata: the
 webhook reads the PaymentIntent's.

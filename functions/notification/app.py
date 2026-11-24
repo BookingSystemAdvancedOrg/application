@@ -75,6 +75,10 @@ PURPOSE:
                          the restaurant's message)
       order_cancelled    e-mail only (cancelled by the restaurant, refund amount) -
                          cancellation SMS are for table bookings, never food orders
+      order_refund_failed  the RESTAURANT only (location e-mail, else the
+                         tenant's reply-to; sent even with staff e-mails off,
+                         like fee_failed): a refund came back (refund.failed),
+                         pay the guest back another way
 
     Feature notices (CONTRACTS.md 9.4): a direct invoke (InvocationType
     Event, retries 0) with {"notice": {"version": 1, "kind":
@@ -465,6 +469,27 @@ def _fresh_notice(new, old, types):
     return notice, None
 
 
+def _order_refund_failed(new, tenant_row, location, source):
+    """The restaurant's e-mail about a refund that came back. A retryable
+    SES error retries the record (nothing else was sent for it)."""
+    staff_to = location.get("email") or tenant_row.get("replyToEmail")
+    if not staff_to:
+        logger.error(json.dumps({"failed": "staff_email", "reason": "no_address", "orderId": new.get("orderId")}))
+        return "no_address"
+    subject, text = order_messages.staff_refund_failed(new, tenant_row, location,
+                                                       os.environ.get("ADMIN_DASHBOARD_URL"))
+    try:
+        _send_email(staff_to, subject, text, None, source=source, reply_to=[],
+                    tenant_id=tenant_row.get("tenantId"), location_id=new.get("locationId"))
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise Retry from exc
+        raise
+    logger.info(json.dumps({"notice": orders.NOTICE_REFUND_FAILED, "orderId": new.get("orderId"),
+                            "sent": ["staff_email"]}))
+    return "sent"
+
+
 def _order(record):
     new = _image(record["dynamodb"].get("NewImage"))
     old = _image(record["dynamodb"].get("OldImage"))
@@ -484,9 +509,11 @@ def _order(record):
         raise
     if not tenant_row or tenant_row.get("status") != "active" or not location:
         return "inactive"
+    source = _from_address(tenant_row, location)
+    if kind == orders.NOTICE_REFUND_FAILED:
+        return _order_refund_failed(new, tenant_row, location, source)
     base, slug = _site(tenant_id, tenant_row)
     link = orders.status_url(base, new, slug=slug)
-    source = _from_address(tenant_row, location)
     reply_to = _reply_to(tenant_row, location)
     sent = []
 

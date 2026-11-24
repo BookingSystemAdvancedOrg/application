@@ -99,7 +99,9 @@ NOTICE_STARTED = "order_started"       # staff pressed "Påbörja": the confirma
 NOTICE_READY = "order_ready"           # SMS (email if no SMS possible) - pickup only
 NOTICE_CANCELLED = "order_cancelled"   # SMS + email, refund
 NOTICE_REFUNDED = "order_refunded"     # email: the restaurant refunded (part of) the order
-NOTICE_TYPES = (NOTICE_CONFIRMED, NOTICE_STARTED, NOTICE_READY, NOTICE_CANCELLED, NOTICE_REFUNDED)
+NOTICE_REFUND_FAILED = "order_refund_failed"  # email to the RESTAURANT: a refund came back (refund.failed)
+NOTICE_TYPES = (NOTICE_CONFIRMED, NOTICE_STARTED, NOTICE_READY, NOTICE_CANCELLED, NOTICE_REFUNDED,
+                NOTICE_REFUND_FAILED)
 
 VAT_ALCOHOL = 25
 VAT_RESTAURANT = 12
@@ -643,6 +645,9 @@ def guest_view(item, location=None):
         "language": item.get("language", "sv"),
         # How it was paid (Swish, Klarna, Apple Pay, "Visa ****4242"...).
         "paidWith": payment_methods.view(item.get("paidWith")),
+        # A refund came back to the restaurant (refund.failed): the site then
+        # says the restaurant pays back another way, never a method promise.
+        "refundIssue": True if item.get("refundFailed") else None,
     }
     if location:
         view["location"] = {k: location.get(k) for k in ("name", "address", "phoneNumber")}

@@ -162,6 +162,7 @@ def env(monkeypatch):
         "SCHEDULER_INVOKE_ROLE_ARN": "arn:aws:iam::1:role/sched", "SCHEDULER_DLQ_ARN": "arn:aws:sqs:x:1:dlq",
         "DOCUMENT_LOCK_MODE": "GOVERNANCE", "DOCUMENT_LOCK_DAYS": "1",
         "SIGNING_WEBHOOK_URL": "https://api.example.se/webhooks/signing/catering",
+        "STRIPE_SECRET_ARN": "arn:aws:secretsmanager:eu-north-1:1:secret:stripe",
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
@@ -1004,3 +1005,28 @@ def test_failed_refund_is_listed_once_on_the_request(env):
     dashboard = dict(refund, id="re_8", metadata={})
     assert body_of(webhook(env, "refund.failed", dashboard))["result"] == "refund_failed"
     assert len(c.load(LOC_A, rid)["refundFailed"]) == 2
+
+
+def test_a_failed_late_payment_refund_finds_its_request_through_the_payment(env):
+    rid, token = signed(env)
+    guest(env, "POST", "/checkout", rid, token)
+    env.stripe.details = {"type": "swish"}
+    webhook(env, "checkout.session.completed", {"id": "cs_cat_1", "payment_status": "paid", "payment_intent": "pi_cat",
+                                                "metadata": {"locationId": LOC_A, "requestId": rid}})
+    env.stripe.intent_metadata = {"locationId": LOC_A, "requestId": rid}
+    old_style = {"id": "re_9", "amount": 1000, "payment_intent": "pi_cat", "status": "failed",
+                 "metadata": {"requestId": rid}}  # a refund from before refunds carried locationId
+    assert body_of(webhook(env, "refund.failed", old_style))["result"] == "refund_failed"
+
+
+def test_catering_refunds_carry_the_location():
+    from shared import catering_stripe as cs_mod
+    seen = []
+    import shared.stripe_client as sc
+    original = sc.request
+    sc.request = lambda method, path, params=None, **kw: seen.append(params) or {"id": "re_1"}
+    try:
+        cs_mod.refund_late_payment("acct_x", "pi_1", "req_1", "loc_1")
+    finally:
+        sc.request = original
+    assert seen[0]["metadata"] == {"requestId": "req_1", "locationId": "loc_1"}

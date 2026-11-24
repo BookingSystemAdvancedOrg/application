@@ -167,7 +167,7 @@ def _settled_or_refund(item, session, account):
         logger.error(json.dumps({"lateCateringPayment": "no_payment_intent", "requestId": item["requestId"],
                                  "session": session.get("id")}))
         return "late_payment_unrefunded"
-    cs.refund_late_payment(account, intent, item["requestId"])
+    cs.refund_late_payment(account, intent, item["requestId"], item["locationId"])
     logger.warning(json.dumps({"lateCateringPayment": "refunded", "requestId": item["requestId"],
                                "status": item["status"]}))
     return "refunded_late_payment"
@@ -223,9 +223,14 @@ def _refund_failed(refund, account, stripe_event, now):
     refund id with an audit row."""
     meta = refund.get("metadata") or {}
     intent = refund.get("payment_intent")
-    if not meta.get("requestId") and isinstance(intent, str) and intent.startswith("pi_"):
-        # Started in the Stripe Dashboard: the request is on the PaymentIntent.
-        meta = (stripe.request("GET", f"/v1/payment_intents/{intent}", account=account) or {}).get("metadata")
+    if not (meta.get("requestId") and meta.get("locationId")) and isinstance(intent, str) and intent.startswith("pi_"):
+        # Started in the Stripe Dashboard, or a refund from before refunds
+        # carried locationId: the request is on the PaymentIntent.
+        try:
+            meta = (stripe.request("GET", f"/v1/payment_intents/{intent}", account=account) or {}).get("metadata")
+        except stripe.StripeError as exc:
+            logger.warning(json.dumps({"ignored": "refund_failed_unreadable", "code": exc.code}))
+            return "ignored:payment_intent_unreadable"
     item = _request(meta, account)
     refund_id = refund.get("id")
     if not item or not isinstance(refund_id, str) or not refund_id.startswith("re_"):

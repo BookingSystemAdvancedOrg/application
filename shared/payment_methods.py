@@ -33,6 +33,7 @@ Nothing else of the payment is stored: no payer e-mail, phone or name.
 
 import json
 import logging
+import os
 
 from shared import stripe_client as stripe
 
@@ -100,6 +101,8 @@ def lookup(account, payment_intent):
     settled regardless; the method is a display detail)."""
     if not account or not isinstance(payment_intent, str) or not payment_intent.startswith("pi_"):
         return None
+    if not os.environ.get("STRIPE_SECRET_ARN"):
+        return None  # a Lambda without the platform key (until infrastructure gives it one)
     try:
         intent = stripe.request("GET", f"/v1/payment_intents/{payment_intent}", {"expand": ["latest_charge"]},
                                 account=account, timeout=_LOOKUP_TIMEOUT)

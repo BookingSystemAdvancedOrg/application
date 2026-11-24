@@ -164,10 +164,13 @@ def invoice(item, offer, account, settings):
     return final
 
 
-def refund_payment(account, payment_intent, request_id, *, idempotency_key=None):
+def refund_payment(account, payment_intent, request_id, location_id=None, *, idempotency_key=None):
+    """locationId on the refund: a refund.failed finds its request by it
+    (a company invoice's PaymentIntent carries no metadata of its own)."""
+    metadata = {"requestId": request_id, **({"locationId": location_id} if location_id else {})}
     return stripe.request("POST", "/v1/refunds", {
         "payment_intent": payment_intent, "reason": "requested_by_customer",
-        "metadata": {"requestId": request_id},
+        "metadata": metadata,
     }, account=account, idempotency_key=idempotency_key or f"cat-refund-{request_id}")
 
 
@@ -190,10 +193,10 @@ def invoice_payment_intent(account, invoice):
     return None
 
 
-def refund_late_payment(account, payment_intent, request_id):
+def refund_late_payment(account, payment_intent, request_id, location_id=None):
     """A Checkout payment that completed after the request was cancelled
     or expired: refunded in full (one key per payment intent)."""
-    return refund_payment(account, payment_intent, request_id,
+    return refund_payment(account, payment_intent, request_id, location_id,
                           idempotency_key=f"cat-refund-late-{payment_intent}")
 
 

@@ -182,7 +182,12 @@ def _refund_failed(refund, account, now):
     intent = refund.get("payment_intent")
     if not meta.get("orderId") and isinstance(intent, str) and intent.startswith("pi_"):
         # Started in the Stripe Dashboard: the order is on the PaymentIntent.
-        meta = (stripe.request("GET", f"/v1/payment_intents/{intent}", account=account) or {}).get("metadata")
+        try:
+            meta = (stripe.request("GET", f"/v1/payment_intents/{intent}", account=account) or {}).get("metadata")
+        except stripe.StripeError as exc:
+            # Not readable (another kind of payment, or gone): not an order of ours to settle.
+            logger.warning(json.dumps({"ignored": "refund_failed_unreadable", "code": exc.code}))
+            return "ignored:payment_intent_unreadable"
     item = _order(meta, account)
     if not item or not intent or item.get("paymentIntentId") != intent:
         return "ignored"

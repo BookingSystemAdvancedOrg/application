@@ -284,9 +284,17 @@ def refund(item, amount, now, actor, *, reason=None, notify=True, notice_kind=o.
     return item
 
 
+def failed_refund_total(item):
+    """öre of refunds Stripe gave back to the balance (refundFailed)."""
+    return sum(int(e.get("amount") or 0) for e in item.get("refundFailed") or [] if isinstance(e, dict))
+
+
 def record_stripe_refund(item, amount_refunded, now):
-    """charge.refunded on the order's PaymentIntent: (item, result)."""
-    return refunds.from_stripe(_CardRefunds(item), item, amount_refunded, now)
+    """charge.refunded on the order's PaymentIntent: (item, result). A
+    failed refund stays in our total (the guest is still owed it, paid back
+    by hand) while Stripe drops it from amount_refunded: it is added back
+    before comparing, so a later Dashboard refund is still recorded."""
+    return refunds.from_stripe(_CardRefunds(item), item, int(amount_refunded or 0) + failed_refund_total(item), now)
 
 
 def record_refund_failure(item, refund, now):
@@ -295,7 +303,9 @@ def record_refund_failure(item, refund, now):
     restaurant's balance). The refund stays recorded - the guest is still
     owed it, now from the restaurant directly - and the failure is listed
     once per refund id (refundFailed) with a history entry, so the order
-    screen tells staff to pay the guest back another way. The accounting
+    screen tells staff to pay the guest back another way, and the
+    order_refund_failed notice e-mails the restaurant (the order may be
+    from an earlier day). The accounting
     export books the balance coming back (refund_failure) to the OBS
     account with the same advice. Returns the result."""
     refund_id = refund.get("id")
@@ -313,10 +323,13 @@ def record_refund_failure(item, refund, now):
             UpdateExpression=(
                 "SET refundFailed = list_append(if_not_exists(refundFailed, :empty), :failed), "
                 "history = list_append(if_not_exists(history, :empty), :entry), updatedAt = :now, "
-                "version = if_not_exists(version, :zero) + :one ADD refundFailedIds :ids"),
+                "notice = :notice, version = if_not_exists(version, :zero) + :one ADD refundFailedIds :ids"),
             ConditionExpression="attribute_exists(PK) AND NOT contains(refundFailedIds, :id)",
             ExpressionAttributeValues={":failed": [entry], ":entry": [history], ":empty": [], ":now": o.iso(now),
-                                       ":zero": 0, ":one": 1, ":ids": {refund_id}, ":id": refund_id})
+                                       ":zero": 0, ":one": 1, ":ids": {refund_id}, ":id": refund_id,
+                                       # The restaurant gets an e-mail (notification): the order
+                                       # may be from another day than the one on the screen.
+                                       ":notice": o.notice(o.NOTICE_REFUND_FAILED, now)})
     except ClientError as exc:
         if _conditional_failed(exc):
             return "already_recorded"

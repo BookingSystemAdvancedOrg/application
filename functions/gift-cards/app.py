@@ -49,6 +49,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import bot_check, console_invoke, dynamo, events, http, orders, request_guard, tenant
+from shared import payment_methods as pm
 from shared import stripe_client as stripe
 from shared.features import gift_cards as gc
 
@@ -214,8 +215,9 @@ def checkout(event):
             # A retry: the stored PaymentIntent, not a new one (Stripe idempotency keys expire after 24 h).
             intent = stripe.request("GET", f"/v1/payment_intents/{existing['paymentIntentId']}", account=account)
         else:
-            intent = stripe.request("POST", "/v1/payment_intents", {
-                "amount": amount * 100, "currency": "sek", "automatic_payment_methods": {"enabled": "true"},
+            # Only card (Apple Pay, Google Pay), Swish and Klarna (shared/payment_methods.py).
+            intent = pm.payment_intent({
+                "amount": amount * 100, "currency": "sek",
                 "description": f"Presentkort {(ctx.location.get('name') or '')[:60]}".strip(), "receipt_email": buyer,
                 "metadata": {"kind": "giftcard", "tenantId": ctx.tenant_id, "locationId": location_id,
                              "purchaseId": purchase_id},
@@ -240,8 +242,12 @@ def checkout(event):
         except ClientError as exc:
             if not gc.conditional_failed(exc):
                 raise
-    return http.respond(200, {"clientSecret": intent["client_secret"], "amountSek": amount,
-                              "expiresAt": gc.iso(expires), "stripeAccount": account})
+    out = {"clientSecret": intent["client_secret"], "amountSek": amount, "expiresAt": gc.iso(expires),
+           "stripeAccount": account}
+    methods = pm.offered(intent)
+    if methods is not None:
+        out["methods"] = methods
+    return http.respond(200, out)
 
 
 def balance(event):

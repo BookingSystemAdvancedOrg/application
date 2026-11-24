@@ -81,6 +81,9 @@ class FakeStripe:
         # How the guest paid: the latest charge's payment_method_details.
         self.details = {"type": "card", "card": {"brand": "visa", "last4": "4242", "wallet": None}}
         self.intent_metadata = {}
+        # What the created session offers (payment_method_types); None = Stripe did not say.
+        self.offers = None
+        self.sessions_created = 0
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None, timeout=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
@@ -89,10 +92,16 @@ class FakeStripe:
             raise self.fail
         if path == "/v1/checkout/sessions":
             total = sum(li["price_data"]["unit_amount"] * li["quantity"] for li in params["line_items"])
-            self.session = {"id": "cs_test_1", "url": "https://checkout.stripe.com/c/pay/cs_test_1",
-                            "client_secret": "cs_test_1_secret_x", "ui_mode": params.get("ui_mode", "hosted_page"),
+            self.sessions_created += 1
+            sid = f"cs_test_{self.sessions_created}"
+            self.session = {"id": sid, "url": f"https://checkout.stripe.com/c/pay/{sid}",
+                            "client_secret": f"{sid}_secret_x", "ui_mode": params.get("ui_mode", "hosted_page"),
                             "metadata": params["metadata"], "amount_total": total, "currency": "sek",
                             "payment_status": "unpaid", "status": "open", "payment_intent": None}
+            if params.get("payment_method_types"):  # a narrowed session offers exactly what it names
+                self.session["payment_method_types"] = list(params["payment_method_types"])
+            elif self.offers is not None:
+                self.session["payment_method_types"] = list(self.offers)
             return dict(self.session)
         if path.startswith("/v1/checkout/sessions/") and path.endswith("/expire"):
             self.session = dict(self.session, status="expired")
@@ -1299,3 +1308,49 @@ def test_an_unreadable_payment_on_a_failed_refund_is_ignored_not_retried(env):
     response = webhook(env, stripe_event("refund.failed", _failed_refund(created, metadata={})))
     env["stripe"].fail = None
     assert response["statusCode"] == 200 and body_of(response)["result"] == "ignored:payment_intent_unreadable"
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_order_checkout_offers_only_card_swish_and_klarna(env, embedded):
+    """Owner 2026-11-24: Amazon Pay or anything else the account has on never
+    shows; the site gets the methods the session offers."""
+    env["monkeypatch"].setenv("STRIPE_API_VERSION", "2026-07-29.dahlia")
+    env["stripe"].offers = ["card", "klarna", "link"]
+    body = body_of(post_order(env, embedded=embedded))
+    call = next(c for c in env["stripe"].calls if c["path"] == "/v1/checkout/sessions")
+    assert {"amazon_pay", "paypal"} <= set(call["params"]["excluded_payment_method_types"])
+    assert not {"card", "swish", "klarna"} & set(call["params"]["excluded_payment_method_types"])
+    assert "payment_method_types" not in call["params"]
+    assert body["methods"] == ["card", "klarna"]
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_order_checkout_with_an_unlisted_method_is_narrowed(env, embedded):
+    """A type the exclusion cannot name (wero) replaces the session: the
+    guest, the stored order and the webhooks all follow the second one; the
+    first one's expiry changes nothing."""
+    env["monkeypatch"].setenv("STRIPE_API_VERSION", "2026-07-29.dahlia")
+    env["stripe"].offers = ["card", "swish", "wero"]
+    body = body_of(post_order(env, embedded=embedded))
+    calls = [c for c in env["stripe"].calls if c["path"] == "/v1/checkout/sessions"]
+    assert [c["key"] for c in calls] == [f"checkout-{body['orderId']}", f"checkout-{body['orderId']}-only"]
+    assert calls[1]["params"]["payment_method_types"] == ["card", "swish"]
+    assert "excluded_payment_method_types" not in calls[1]["params"]
+    assert body["methods"] == ["card", "swish"]
+    assert env["stripe"].session["id"] == "cs_test_2"
+    if embedded:
+        assert body["clientSecret"] == "cs_test_2_secret_x"
+    else:
+        assert body["checkoutUrl"] == "https://checkout.stripe.com/c/pay/cs_test_2"
+    assert "cs_test_1" not in json.dumps(body)
+    assert stored(env, body["orderId"])["checkoutSessionId"] == "cs_test_2"
+
+    orphan = dict(env["stripe"].session, id="cs_test_1", status="expired",
+                  payment_method_types=["card", "swish", "wero"])
+    result = body_of(webhook(env, stripe_event("checkout.session.expired", orphan)))["result"]
+    assert result == "ignored:mismatch"
+    assert stored(env, body["orderId"])["status"] == "pending_payment"
+
+    paid = paid_session(env, body["orderId"])
+    assert paid["id"] == "cs_test_2"
+    assert body_of(webhook(env, stripe_event("checkout.session.completed", paid)))["result"] == "confirmed"

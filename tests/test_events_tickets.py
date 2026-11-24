@@ -50,12 +50,13 @@ class FakeStripe:
             raise stripe.StripeUnavailable("down")
         if method == "GET" and path == "/v1/refunds":
             return {"data": [r for r in self.known_refunds if r.get("payment_intent") == params["payment_intent"]]}
+        offers = {"payment_method_types": list(self.offers)} if getattr(self, "offers", None) is not None else {}
         if path == "/v1/payment_intents":
             pid = f"pi_{idempotency_key[-12:]}"
-            return {"id": pid, "client_secret": f"{pid}_secret", "amount": params["amount"]}
+            return {"id": pid, "client_secret": f"{pid}_secret", "amount": params["amount"], **offers}
         if method == "GET" and path.startswith("/v1/payment_intents/"):
             pid = path.rsplit("/", 1)[-1]
-            return {"id": pid, "client_secret": f"{pid}_secret", "status": "requires_payment_method"}
+            return {"id": pid, "client_secret": f"{pid}_secret", "status": "requires_payment_method", **offers}
         if path.endswith("/cancel"):
             return {"id": path.split("/")[3], "status": "canceled"}
         return {"id": f"re_{len(self.calls)}", "status": "succeeded"}
@@ -1423,3 +1424,17 @@ def test_sweep_and_hooks_still_run_in_prod_with_the_dev_twin_entry(env, monkeypa
     assert occ_row(env)["held"] == 0
     out = env.api.handler({"hook": "tenant.purge", "tenantId": TENANT_A, "locationIds": [LOC_A], "round": 1})
     assert out["ok"] and out["done"]
+
+
+def test_ticket_checkout_offers_only_card_swish_and_klarna(env, monkeypatch):
+    """Owner 2026-11-24: allowed_payment_method_types, never automatic methods;
+    the retry names the same methods."""
+    monkeypatch.setenv("STRIPE_API_VERSION", "2026-07-29.dahlia")
+    env.stripe.offers = ["card", "swish"]
+    published(env)
+    status, body = buy(env)
+    assert status == 200 and body["methods"] == ["card", "swish"]
+    intent = next(c for c in env.stripe.calls if c["path"] == "/v1/payment_intents")
+    assert intent["params"]["allowed_payment_method_types"] == ["card", "swish", "klarna"]
+    assert "automatic_payment_methods" not in intent["params"]
+    assert buy(env)[1]["methods"] == ["card", "swish"]

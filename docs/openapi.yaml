@@ -7533,7 +7533,7 @@ paths:
         - Catering
       summary: Pay the signed offer
       operationId: startCateringCheckout
-      description: 'Private guests; {embedded: true} answers clientSecret and stripeAccount, else checkoutUrl.'
+      description: 'Private guests; {embedded: true} answers clientSecret and stripeAccount, else checkoutUrl. Both carry methods (the offered card, swish, klarna; no other method is offered) when Stripe says.'
       security: []
       x-required-groups: []
       requestBody:
@@ -10228,6 +10228,9 @@ components:
               description: >-
                 The restaurant's Stripe capabilities for what the site's
                 payment steps offer (Apple Pay and Google Pay ride on card).
+                Booqy requests all three on every account (at onboarding,
+                and on an existing account when a guest's payment starts);
+                Stripe activates each once the account meets its terms.
                 Present once Stripe has sent an account update.
               properties:
                 card: {$ref: '#/components/schemas/CapabilityStatus'}
@@ -10781,6 +10784,16 @@ components:
         stripeAccount:
           type: string
           description: The restaurant's connected account (acct_...) for Stripe.js (embedded requests).
+        methods:
+          type: array
+          description: >-
+            The payment methods this Checkout Session offers, of the allowed
+            card (Apple Pay and Google Pay ride on it), swish and klarna (no
+            other method is ever offered). Absent when Stripe did not say;
+            the site then names the methods generically.
+          items:
+            type: string
+            enum: [card, swish, klarna]
         statusToken:
           type: string
         totalAmount:
@@ -10858,12 +10871,14 @@ components:
       description: >-
         How a payment was made (shared/payment_methods.py). Apple Pay and
         Google Pay are wallets on a card and keep its brand and last four.
-        Nothing else of the payer is stored.
+        Nothing else of the payer is stored. Checkouts offer only card,
+        Apple Pay, Google Pay, Swish and Klarna; paypal, link, amazon_pay,
+        revolut_pay and mobilepay name an older payment.
       required: [method]
       properties:
         method:
           type: string
-          enum: [card, apple_pay, google_pay, swish, klarna, paypal, link, other]
+          enum: [card, apple_pay, google_pay, swish, klarna, paypal, link, amazon_pay, revolut_pay, mobilepay, other]
         brand:
           type: string
           description: Card and wallets only (visa, mastercard, amex, ...).

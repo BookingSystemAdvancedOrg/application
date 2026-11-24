@@ -1728,6 +1728,15 @@ components:
           type: number
         expiresAt: *id001
         stripeAccount: *id001
+        methods:
+          type: array
+          description: >-
+            The payment methods this PaymentIntent offers, of the allowed
+            card (Apple Pay and Google Pay ride on it), swish and klarna (no
+            other method is ever offered). Absent when Stripe did not say.
+          items:
+            type: string
+            enum: [card, swish, klarna]
       required:
       - amountSek
       - expiresAt

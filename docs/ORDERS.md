@@ -33,9 +33,13 @@ restaurant's own till; a guest with a booking arrives and pays there too.
 
 ## Payment methods
 
-Stripe's Payment Element with dynamic payment methods on the restaurant's
-connected account offers what that account has activated, for SEK, on
-that device and for that amount (shared/payment_methods.py):
+Every guest checkout (orders, private catering, gift cards, event
+tickets) offers ONLY card (Visa, Mastercard; Apple Pay and Google Pay ride
+on it), Swish and Klarna (owner 2026-11-24), and of those what the
+restaurant's connected account has activated, for SEK, on that device and
+for that amount. Amazon Pay, Link, PayPal or any other method the account
+turns on never shows (shared/payment_methods.py `checkout_session`,
+`payment_intent`):
 
 | Method | How it shows | Settles | Refund |
 |---|---|---|---|
@@ -44,20 +48,64 @@ that device and for that amount (shared/payment_methods.py):
 | Swish | redirect to the app on a phone, QR code on a computer; 3 kr - 150 000 kr | at once | asynchronous, usually minutes; can fail (below) |
 | Klarna | redirect to Klarna; pay later, pay now or installments, up to 150 000 kr | when Klarna approves | via Klarna, up to 180 days |
 
-Stripe Link is off (`wallet_options.link.display = never`: its SMS code
-goes to the Link account's phone, not the guest's). PayPal is not offered:
-Stripe does not support it for direct charges on Connect.
+How, at the pinned `STRIPE_API_VERSION` (2026-07-29.dahlia):
 
-The restaurant turns Swish and Klarna on in its own Stripe Dashboard
-(Settings, Payment methods; accounts with the full Dashboard manage their
-own methods). Admin's Betalningar card lists each method's status from the
-account's capabilities (`GET /tenant` `stripe.paymentMethods`, kept current
-by `account.updated` in platform-stripe-webhook).
+- **PaymentIntents** (gift cards, tickets): `allowed_payment_method_types
+  [card, swish, klarna]`, a filter: Stripe keeps those the account can take
+  and lists them in the answer's `payment_method_types`; an inactive Swish
+  or Klarna is dropped, never an error.
+- **Checkout Sessions** (orders, catering): that filter only exists from
+  2026-09-30.endive (used from there on). Until then dynamic payment
+  methods with `excluded_payment_method_types` (every type in the dahlia
+  enum except card, Swish and Klarna: Amazon Pay, PayPal, Revolut Pay,
+  MobilePay, Bizum, Satispay and the rest), then the session's
+  `payment_method_types` is checked: a type the enum does not name (Wero,
+  SeQura, one Stripe adds later) replaces the session with one whose
+  `payment_method_types` is the allowed part of what Stripe offered (so
+  activated, never refused; key `<key>-only`). The first session is never
+  handed out and expires on its own (its webhook does not match the stored
+  session id).
+- Not `payment_method_types [card, swish, klarna]` directly: Stripe refuses
+  the whole session when one is not activated. A 400 on the filter or
+  exclusion parameter falls back to dynamic methods plus the same check.
+
+The answer to the site carries `methods` (`["card", "swish", "klarna"]`,
+the allowed ones this session or intent offers; absent when Stripe did not
+say) so the site names only those.
+
+Stripe Link is off (`wallet_options.link.display = never` on Checkout, not
+in the allowed set on PaymentIntents: its SMS code goes to the Link
+account's phone, not the guest's). PayPal is not offered: Stripe does not
+support it for direct charges on Connect.
+
+Card, Swish and Klarna are meant to be on for every restaurant's account
+(owner 2026-11-24). Booqy does not request Swish or Klarna through the API:
+the onboarding workflow requests `card_payments` only (a capability Stripe
+refuses would fail the whole account create), and the guest Lambdas' Stripe
+key stays read only on accounts. Instead the platform's payment method
+settings for connected accounts (Stripe Dashboard, Settings, Connect,
+Payment methods, "For your connected accounts": card, Apple Pay, Google
+Pay, Swish and Klarna "On by default"; Dashboard only, no API) make Stripe
+request each capability for every eligible account that has met its
+requirements, existing ones included, and for a new account at creation
+when it adds no new requirements (docs.stripe.com/connect/payment-methods).
+The checkouts use dynamic payment methods, so that setting is needed
+anyway. Stripe may still need the restaurant to activate a method or
+accept its terms in its own Stripe Dashboard (Swish's terms, with their
+factoring addendum), and leaves a method out for an ineligible account
+(business category, Klarna's rules, B2B); until a method is active the
+checkout simply leaves it out. A restaurant with the full Dashboard can
+also switch a method off for its account. Admin's Betalningar card lists
+each method's status from the account's capabilities (`GET /tenant`
+`stripe.paymentMethods`, kept current by `account.updated` in
+platform-stripe-webhook); the steps are in infrastructure
+docs/PLATFORM-SETUP.md and docs/TENANT-ONBOARDING.md.
 
 **How it was paid:** when the order is settled, the PaymentIntent is read
 on the account (`expand latest_charge`) and `paidWith` stored: `{method:
 card | apple_pay | google_pay | swish | klarna | other, brand?, last4?}`
-(no payer details). Best effort: without an answer the order still
+(no payer details; paypal, link, amazon_pay, revolut_pay and mobilepay are
+still named on a payment from before the allowed set, never "Stripe"). Best effort: without an answer the order still
 confirms, without `paidWith` (receipt then says Kort (Stripe)). The
 receipt, the refund e-mails ("via Swish, oftast inom några minuter"), the
 guest's status page and admin's order card name the method.

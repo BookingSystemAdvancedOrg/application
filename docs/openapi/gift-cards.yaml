@@ -562,6 +562,15 @@ components:
         amountSek: *id002
         expiresAt: *id003
         stripeAccount: *id003
+        methods:
+          type: array
+          description: >-
+            The payment methods this PaymentIntent offers, of the allowed
+            card (Apple Pay and Google Pay ride on it), swish and klarna (no
+            other method is ever offered). Absent when Stripe did not say.
+          items:
+            type: string
+            enum: [card, swish, klarna]
     GiftCardsCodeBody:
       type: object
       additionalProperties: false

@@ -13,7 +13,8 @@ TRIGGER:
                                        {"name", "role"?, "confirmAuthority"?, "acceptTerms": true}
     POST .../customer/checkout         private guest: pay the signed offer (Stripe Checkout);
                                        {"embedded": true} -> {clientSecret, stripeAccount}
-                                       for the site's Payment Element, else {checkoutUrl}
+                                       for the site's Payment Element, else {checkoutUrl};
+                                       both with methods (offered card/swish/klarna) when known
     POST .../customer/change           {"message"} ask the restaurant to change the offer
     POST .../customer/reject           {"reason"} decline the offer
     GET  .../customer/documents/{offer|signed|signature}   5-minute link to the offer PDF,
@@ -50,7 +51,7 @@ from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import http, payment_domains, request_guard, signing, site, tenant
+from shared import http, payment_domains, payment_methods, request_guard, signing, site, tenant
 from shared import catering as c
 from shared import catering_signing as sign
 from shared import catering_stripe as cs
@@ -213,9 +214,12 @@ def _checkout(event):
                       values={":s": session["id"], ":a": attempt, ":now": c.iso(now), ":acct": account}),
         c.audit_put(item["requestId"], "checkout_started", "guest", now, session=session["id"]),
     ])
-    if embedded:
-        return http.respond(200, {"clientSecret": session["client_secret"], "stripeAccount": account})
-    return http.respond(200, {"checkoutUrl": session["url"]})
+    out = {"clientSecret": session["client_secret"], "stripeAccount": account} if embedded \
+        else {"checkoutUrl": session["url"]}
+    methods = payment_methods.offered(session)
+    if methods is not None:
+        out["methods"] = methods  # the allowed methods this session offers (shared/payment_methods.py)
+    return http.respond(200, out)
 
 
 def _change(event):

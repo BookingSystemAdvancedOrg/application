@@ -47,7 +47,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import availability, booking_rules, events, guarantee, http, manage_link, request_guard, site, tenant
-from shared import bot_check
+from shared import bot_check, table_names
 from shared import reservations as r
 from shared.features import waitlist as wl
 
@@ -230,6 +230,9 @@ def _reservation(ctx, entry, context, slot, seats, table_ids, now, *, day, statu
         "history": [r.history_entry("held" if status == r.HELD else "created", by, now, status=status,
                                     source="waitlist")],
     }
+    labels = table_names.stamp(table_ids, slot["tables"])
+    if labels:
+        item["tableLabels"] = labels
     if status == r.HELD:
         item.update({"holdOnly": True, "fromHold": True, "pendingExpiresAt": r.iso(hold_expires),
                      "ttl": int(hold_expires.timestamp()) + 2 * 86400})

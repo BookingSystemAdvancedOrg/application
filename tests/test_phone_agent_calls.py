@@ -447,3 +447,22 @@ def test_larger_and_phone_only_tables():
     assert [n["kind"] for n in of.nearby(guest, staff, LAYOUT, "19:00", 4, phone_only_tables=False)] == ["larger"]
     assert of.nearby(guest, staff, {}, "19:00", 4) == []                  # no floor plan
     assert of.offers(guest, staff, LAYOUT, "19:00", 4)["reason"] == "time_taken"
+
+
+def test_nearby_names_without_slot_labels_number_the_public_layout_by_floor_level():
+    # The public /layout/active body keeps the floors in `floors`, not in `elements`.
+    def table(tid, x, floor):
+        return {"elementId": tid, "type": "table", "seats": 2, "x": x, "z": 0.0, "width": 1.0, "depth": 1.0,
+                "rotationY": 0, "floorId": floor}
+    layout = {"floors": [{"floorId": "up", "name": "Övervåning", "level": 1},
+                         {"floorId": "ground", "name": "Entré", "level": 0}],
+              "elements": [table("u1", 0.0, "up"), table("u2", 2.0, "up"), table("g1", 0.0, "ground")]}
+    assert of.layout_labels(layout) == {"g1": "1", "u1": "2", "u2": "3"}
+    staff = {"slots": [{"startTime": "19:00", "tables": [{"tableId": t, "seats": 2} for t in ("u1", "u2", "g1")]}]}
+    (pair,) = of.nearby({"slots": []}, staff, layout, "19:00", 4)
+    assert pair["tableIds"] == ["u1", "u2"] and pair["tables"] == ["Table 2", "Table 3"]
+    # A slot label from get-availability (the slot's own layout version) still wins.
+    staff["slots"][0]["tables"] = [{"tableId": "u1", "seats": 2, "label": "7"},
+                                   {"tableId": "u2", "seats": 2, "label": "Bar"}, {"tableId": "g1", "seats": 2,
+                                                                                    "label": "1"}]
+    assert of.nearby({"slots": []}, staff, layout, "19:00", 4)[0]["tables"] == ["Table 7", "Bar"]

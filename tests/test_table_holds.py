@@ -193,3 +193,28 @@ def test_staff_block_sees_a_live_hold_and_may_take_over_an_expired_one(env, monk
     assert block._query_occupancies(pk, prefix) == []
     block._put_manual_item({"PK": row["PK"], "SK": row["SK"], "reservationId": "MANUAL_BLOCK#x", "ttl": 1}, {})
     assert [r["reservationId"] for r in rows(env)] == ["MANUAL_BLOCK#x"]
+
+
+# --- table names: the hold and the booking made from it carry tableLabels ------------------
+
+def test_the_hold_and_its_booking_carry_the_table_labels(env):
+    held = body_of(hold(env))
+    assert held["tableLabels"] == ["2"]
+    assert stored(env, held["holdId"])["tableLabels"] == ["2"]
+    booking = body_of(book_held(env, held))
+    assert booking["tableLabels"] == ["2"]
+    assert stored(env, held["holdId"])["tableLabels"] == ["2"]
+
+
+def test_the_card_guarantee_booking_from_a_hold_keeps_the_labels(g):
+    held = body_of(hold(g))
+    g["stripe"].rid = held["holdId"]
+    booking = book_held(g, held)
+    assert booking["statusCode"] == 201, booking
+    assert body_of(booking)["tableLabels"] == ["2"]
+    assert stored(g, held["holdId"])["tableLabels"] == ["2"]
+    confirmed = g["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/{reservationId}/confirm",
+        reservation=held["holdId"], headers={"x-manage-token": held["manageToken"]}), None)
+    assert confirmed["statusCode"] == 200, confirmed
+    assert stored(g, held["holdId"])["tableLabels"] == ["2"]

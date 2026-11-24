@@ -493,3 +493,34 @@ def test_public_join_that_skipped_the_waf_is_bot_check_failed(env, monkeypatch):
     body = {"entryId": E1, "name": "Sara", "partySize": 2, "phone": "0701234567"}
     status, answer = public(env, "POST", "/public/locations/{locationId}/waitlist", body=body)
     assert status == 400 and answer["code"] == "bot_check_failed"
+
+
+# --- table names: offers and seats stamp tableLabels (table-a/b/c are 1/2/3) ----------------
+
+def test_offer_and_seat_reservations_carry_table_labels(env):
+    walk_in(env)
+    status, body = offer(env)
+    assert status == 200, body
+    held = shared_r.load(LOC_A, body["offer"]["reservationId"])
+    assert held["status"] == "held" and held["tableLabels"] == ["1"]
+    status, body = call(env, "POST", Q + "/{entryId}/seat", entry=E1, body={"version": 2})
+    assert status == 200, body
+    assert shared_r.load(LOC_A, body["reservationId"])["tableLabels"] == ["1"]
+
+    walk_in(env, entry=E2, phone="0702222222")
+    status, body = call(env, "POST", Q + "/{entryId}/seat", entry=E2, body={"tableIds": ["table-b"], "version": 1})
+    assert status == 200, body
+    seated = shared_r.load(LOC_A, body["reservationId"])
+    assert seated["status"] == "arrived" and seated["tableLabels"] == ["2"]
+
+
+def test_an_accepted_offer_keeps_the_table_labels(env):
+    settings(env)
+    join = "/public/locations/{locationId}/waitlist"
+    body = {"entryId": E1, "name": "Sara", "partySize": 2, "phone": "0701234567", "wantFrom": "18:00"}
+    token = public(env, "POST", join, body=body)[1]["token"]
+    offer(env, tables=("table-c",))
+    status, accepted = public(env, "POST", "/public/waitlist/{token}/accept", token=token, body={})
+    assert status == 200, accepted
+    booking = shared_r.load(LOC_A, accepted["reservationId"])
+    assert booking["status"] == "reserved" and booking["tableLabels"] == ["3"]

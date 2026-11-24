@@ -176,8 +176,10 @@ def _local(item, value, fmt):
 
 
 def _table(item, lang):
-    # "bord 7" for a number; a named table ("Terrassen") as it is.
-    label = item.get("tableLabel") or ""
+    # "bord 7" for a number; a named table ("Terrassen") as it is; no label: "ditt bord".
+    label = str(item.get("tableLabel") or "").strip()
+    if not label:
+        return "ditt bord" if lang == "sv" else "your table"
     if label[:1].isdigit():
         return f"bord {label}" if lang == "sv" else f"table {label}"
     return label

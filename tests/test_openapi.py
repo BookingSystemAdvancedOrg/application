@@ -793,8 +793,9 @@ def test_get_availability_contract_matches_handler(openapi_document):
     slot = document["components"]["schemas"]["AvailabilitySlot"]
     table = document["components"]["schemas"]["AvailabilityTable"]
     # Everything is always present except `day` (only on a special day) and
-    # a slot's `options` / `unavailable` (only in the partySize guest view).
-    for schema, optional in ((availability, {"day"}), (slot, {"options", "unavailable"}), (table, set())):
+    # a slot's `options` / `unavailable` (only in the partySize guest view);
+    # a table's `label` is additive (older responses lack it).
+    for schema, optional in ((availability, {"day"}), (slot, {"options", "unavailable"}), (table, {"label"})):
         assert schema["additionalProperties"] is False
         assert set(schema["properties"]) - set(schema["required"]) == optional
     assert availability["properties"]["day"] == {"$ref": "#/components/schemas/DayStatus"}
@@ -831,7 +832,13 @@ def test_get_availability_contract_matches_handler(openapi_document):
     }
     assert table["properties"]["seats"]["type"] == "integer"
     assert table["properties"]["seats"]["minimum"] == 1
-    assert set(table["properties"]) == {"tableId", "seats"}
+    assert set(table["properties"]) == {"tableId", "seats", "label"}
+    assert table["properties"]["label"]["type"] == "string" and "never show tableId" in table["properties"][
+        "label"]["description"]
+    schemas = document["components"]["schemas"]
+    assert "label" in schemas["TableUnavailable"]["properties"]
+    for name in ("Reservation", "GuestReservation"):
+        assert schemas[name]["properties"]["tableLabels"]["items"] == {"type": "string"}
 
     conflict_examples = document["components"]["responses"][
         "AvailabilityConflict"

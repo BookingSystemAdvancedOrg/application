@@ -11,6 +11,8 @@ from datetime import date as _date
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from shared import table_names
+
 _WEEKDAYS = {
     "sv": ("måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag", "söndag"),
     "en": ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
@@ -463,13 +465,19 @@ def staff_email(kind, item, tenant_row, location, admin_url):
     never the guest's phone, e-mail or free text (allergies can be health
     data). Those stay behind the login in admin."""
     name = restaurant_name(tenant_row, location)
-    tables = ", ".join(item.get("tableIds") or [])
+    labels = table_names.stored_labels(item)
+    if labels:
+        tables = ", ".join(labels)
+    elif not item.get("tableIds"):
+        tables = "-"
+    else:
+        tables = "se bokningen i admin"  # never the raw table id
     lines = [
         f"Namn: {item.get('customerName') or '-'}",
         f"Datum: {_long_date(item, 'sv')}",
         f"Tid: {item['startTime']}-{item['endTime']}",
         f"Antal: {_guests(item, 'sv')}",
-        f"Bord: {tables or '-'}",
+        f"Bord: {tables}",
     ]
     if item.get("notes"):
         lines.append("Gästen har lämnat ett meddelande. Läs det i bokningen i admin.")

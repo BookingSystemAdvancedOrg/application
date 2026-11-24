@@ -121,7 +121,9 @@ location and forwards the restaurant's number.
 - **Counter-offers** (decision 13): requested time; a nearby table (`adjacent_pair` within 1.0 m on the
   same floor, `larger`, `phone_only`, each switchable per location); the three closest same-day times;
   the next day once; then a callback. `counterOffer` on the call row and `PhoneCall.Ended`: the accepted
-  offer, else the furthest step reached.
+  offer, else the furthest step reached. Nearby options reach the model as an option key plus table names
+  (`{option, tables, seats, kind}`, "Table 3"), never ids; `hold_table` takes the `option` key back and the
+  server maps it to the tables (`state.nearbyRefs`).
 - **No phone numbers, names or transcript text in events or logs.** Callers are found for privacy hooks by
   `fromHash = sha256(tenant|phone)`.
 

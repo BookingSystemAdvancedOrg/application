@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 
-from shared import booking_rules, tenant
+from shared import booking_rules, table_names, tenant
 from shared.dynamo import table
 
 
@@ -854,6 +854,11 @@ def _validate_layout_snapshot(snapshot, location_id, version):
             if table_details is not None:
                 tables.append(table_details)
         _validate_floor_relationships(validated_elements)
+        # Names come from the RAW elements (validated ones drop label and
+        # level): every table on a floor, so every table gets a label.
+        names = table_names.labels_by_id(elements)
+        for table_details in tables:
+            table_details["label"] = names[table_details["tableId"]]
 
         _stored_string(snapshot, "createdBy")
         created_at = _parse_utc_timestamp(snapshot.get("createdAt"))
@@ -1246,16 +1251,17 @@ def _why_unavailable(slot_tables, offered, occupied_how, party_size, rules):
     reasons = []
     for table_details in sorted(slot_tables, key=lambda t: t["tableId"]):
         table_id = table_details["tableId"]
+        named = {"label": table_details["label"]} if table_details.get("label") else {}
         if table_id in offered:
             continue
         if table_id in occupied_how:
-            reasons.append({"tableId": table_id, "reason": occupied_how[table_id]})
+            reasons.append({"tableId": table_id, **named, "reason": occupied_how[table_id]})
             continue
         rule = booking_rules.table_rule(rules, table_id, table_details["seats"])
         if not rule["online"]:
-            reasons.append({"tableId": table_id, "reason": "phone"})
+            reasons.append({"tableId": table_id, **named, "reason": "phone"})
             continue
-        entry = {"tableId": table_id, "minParty": int(rule["minParty"]), "maxParty": int(rule["maxParty"])}
+        entry = {"tableId": table_id, **named, "minParty": int(rule["minParty"]), "maxParty": int(rule["maxParty"])}
         if party_size > rule["maxParty"]:
             entry["reason"] = "too_small"
         elif party_size < rule["minParty"]:

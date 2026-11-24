@@ -4398,6 +4398,10 @@ paths:
                   startTime: {type: string}
                   endTime: {type: string}
                   tableIds: {type: array, items: {type: string}}
+                  tableLabels:
+                    type: array
+                    items: {type: string}
+                    description: "The held tables' names in this slot's layoutVersion, aligned with tableIds."
                   partySize: {type: integer}
                   durationMinutes: {type: integer}
                   extendable: {type: boolean}
@@ -9826,6 +9830,11 @@ components:
           type: array
           items:
             type: string
+        tableLabels:
+          type: array
+          items:
+            type: string
+          description: "The tables' names when they were booked or last moved, aligned with tableIds; absent on bookings made before 2026-11-24."
         seats:
           type: integer
         partySize:
@@ -9939,6 +9948,11 @@ components:
           type: array
           items:
             type: string
+        tableLabels:
+          type: array
+          items:
+            type: string
+          description: "The tables' names when they were booked or last moved, aligned with tableIds; absent on bookings made before 2026-11-24."
         customerName:
           type: string
         cancellable:
@@ -11983,6 +11997,10 @@ components:
           type: integer
           minimum: 1
           description: Published seat capacity for this table.
+        label:
+          type: string
+          minLength: 1
+          description: "The table's name in this slot's layoutVersion: its own label, else its number over all floors (floors by level, tables in drawing order). Show 'Bord {label}' when it starts with a digit, otherwise as it is; never show tableId."
 
     AvailabilitySlot:
       type: object
@@ -12050,6 +12068,10 @@ components:
       properties:
         tableId:
           type: string
+        label:
+          type: string
+          minLength: 1
+          description: "The table's name in this slot's layoutVersion: its own label, else its number over all floors (floors by level, tables in drawing order). Show 'Bord {label}' when it starts with a digit, otherwise as it is; never show tableId."
         reason:
           type: string
           enum: [booked, blocked, phone, too_small, too_large, unavailable]

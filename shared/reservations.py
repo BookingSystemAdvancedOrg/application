@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
-from shared import dynamo
+from shared import dynamo, table_names
 
 # --- status ------------------------------------------------------------------
 
@@ -592,7 +592,7 @@ def list_for_phone(location_id, from_date, to_date, phone, *, limit=PHONE_RANGE_
 
 _STAFF_FIELDS = (
     "reservationId", "locationId", "date", "startTime", "endTime", "bookedFor",
-    "endsAt", "timezone", "tableIds", "seats", "partySize", "layoutVersion",
+    "endsAt", "timezone", "tableIds", "tableLabels", "seats", "partySize", "layoutVersion",
     "customerName", "customerEmail", "customerPhone", "notes", "language",
     "marketingOptIn", "source", "status", "createdAt", "createdBy", "updatedAt",
     "updatedBy", "history", "guarantee", "payment", "pendingExpiresAt", "extendedMinutes",
@@ -652,6 +652,9 @@ def guest_view(item, location=None, *, now=None):
         "customerName": item.get("customerName"),
         "cancellable": item["status"] in ACTIVE and parse_iso(item["bookedFor"]) > now,
     }
+    labels = table_names.stored_labels(item)
+    if labels is not None:
+        view["tableLabels"] = labels
     rule = booking_rule(item)
     view.update({
         "durationMinutes": int((parse_iso(item["endsAt"]) - parse_iso(item["bookedFor"])).total_seconds() // 60),

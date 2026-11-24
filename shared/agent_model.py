@@ -516,9 +516,9 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
             return self._create(slots, result, offered, lang)
         if name == "hold_table" and result.get("held") is False:
             nearby = list(result.get("nearby") or [])
-            if nearby:        # "yes" to the nearby table: hold exactly those tables at the same time
+            if nearby:        # "yes" to the nearby table: hold exactly that option at the same time
                 payload = {k: slots[k] for k in ("date", "time", "partySize") if k in slots}
-                payload["tableIds"] = list(nearby[0].get("tableIds") or [])
+                payload["option"] = nearby[0].get("option")
                 return self._use("hold_table", payload, offered, lang)
             if nearest_times(slots.get("time", "00:00"), result.get("before"), result.get("after")):
                 return self._say("ask_time", lang)

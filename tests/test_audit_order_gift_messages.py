@@ -55,3 +55,16 @@ def test_english_split_cancellation():
             "giftCard": {"last4": "4321", "debitedOre": 20000}}
     text, _ = _mail("order_cancelled", item)
     assert "100 kr to your card" in text and "200 kr to your gift card ****4321" in text
+
+
+def test_a_table_order_without_a_label_is_served_to_your_table():
+    item = {**BASE, "mode": "table", "readyEstimate": "2026-11-16T12:20:00Z"}
+    for kind in ("order_confirmed", "order_started"):
+        text, _ = _mail(kind, item)
+        assert "serveras till ditt bord." in text and "till ." not in text
+        text, _ = _mail(kind, {**item, "language": "en"})
+        assert "served at your table." in text
+    assert "Serveras till ditt bord." in om.sms("order_started", item, TENANT, {})
+    assert "Served at your table." in om.sms("order_started", {**item, "language": "en"}, TENANT, {})
+    text, _ = _mail("order_confirmed", {**item, "tableLabel": "7"})
+    assert "serveras till bord 7." in text

@@ -266,7 +266,7 @@ def dispatch_move(tenant_id, location_id, tab, round_, now):
             if state["stationId"] not in stations:
                 stations.append(state["stationId"])
     header = {**_header(tab, round_, "tab_move"),
-              "fromLabel": round_.get("fromLabel") or round_.get("fromTable"),
+              "fromLabel": round_.get("fromLabel"),  # never the table id: _label prints "Bord ?"
               "toLabel": round_.get("toLabel") or tab.get("tableLabel")}
     source = source_id(tab, round_)
     order = [s["stationId"] for s in config["stations"]]

@@ -198,7 +198,7 @@ from botocore.exceptions import BotoCoreError, ClientError, ConnectionClosedErro
 from zoneinfo import ZoneInfo
 
 from shared import availability, booking_rules, consent, guarantee, http, manage_link, marketing
-from shared import bot_check, messages, payment_domains, request_guard, short_link, site, sms, tenant
+from shared import bot_check, messages, payment_domains, request_guard, short_link, site, sms, table_names, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -617,6 +617,9 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
         "history": [r.history_entry("created", actor, now, status=r.RESERVED, source=source)],
         "ttl": r.retention_ttl(ends_at),
     }
+    labels = table_names.stamp(table_ids, slot["tables"])
+    if labels:
+        item["tableLabels"] = labels
     card, skipped = (_card_decision(ctx, location_id, now, starts_at, mode=guarantee_mode, party_size=party_size)
                      if staff else (False, None))
     if skipped == "too_soon":
@@ -941,6 +944,9 @@ def _hold(event):
         # An abandoned hold is gone from the table two days after it ran out.
         "ttl": int(expires.timestamp()) + 2 * 86400,
     }
+    labels = table_names.stamp(table_ids, slot["tables"])
+    if labels:
+        item["tableLabels"] = labels
     token = manage_link.token_for(item)
     pointer = {
         **r.pointer_key(location_id, hold_id),
@@ -959,7 +965,7 @@ def _hold(event):
             guarantee.marker_put(item),
         ]
     )
-    return http.respond(201, {
+    body = {
         "holdId": hold_id,
         "manageToken": token,
         "expiresAt": r.iso(expires),
@@ -973,7 +979,10 @@ def _hold(event):
         "extendable": slot["rule"]["extensionAllowed"],
         "ruleName": slot["rule"].get("name"),
         "cardRequired": guarantee.required(ctx.location, ctx.tenant, party_size),
-    })
+    }
+    if labels:
+        body["tableLabels"] = labels
+    return http.respond(201, body)
 
 
 def _held(event, location_id, hold_id):

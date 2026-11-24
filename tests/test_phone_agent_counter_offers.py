@@ -149,13 +149,12 @@ def test_nearby_table_is_offered_first_and_held_on_yes(opening, yes, name, lang,
     call = Call()
     call.say(opening)
     offer = call.tool({"held": False, "reason": "time_taken", "time": "19:00", "before": ["18:30"], "after": ["19:30"],
-                       "nearby": [{"tableIds": ["t7", "t8"], "seats": 4, "kind": kind}]})
+                       "nearby": [{"option": "n1", "tables": ["Table 7", "Table 8"], "seats": 4, "kind": kind}]})
     assert offer.text == COUNTER_OFFERS["nearby_table"][lang].format(time="19:00", table=NEARBY_TABLE[kind][lang])
     assert "18:30" not in offer.text                   # the nearby table is offered on its own first
     assert _use(call.say(yes)) == ("hold_table", {"date": "2026-11-03", "time": "19:00", "partySize": 4,
-                                                 "tableIds": ["t7", "t8"]})
-    held = call.tool({"holdId": "h3", "date": "2026-11-03", "time": "19:00", "partySize": 4,
-                      "tableIds": ["t7", "t8"]})
+                                                 "option": "n1"})
+    held = call.tool({"holdId": "h3", "date": "2026-11-03", "time": "19:00", "partySize": 4})
     assert "19:00" in held.text
     call.say(yes)
     assert _use(call.say(name))[1]["holdId"] == "h3"
@@ -167,7 +166,7 @@ def test_nearby_table_declined_falls_back_to_the_closest_times(opening, no, lang
     call = Call()
     call.say(opening)
     call.tool({"held": False, "reason": "time_taken", "time": "19:00", "before": ["18:30"], "after": ["19:30"],
-               "nearby": [{"tableIds": ["t7", "t8"], "seats": 4, "kind": "adjacent_pair"}]})
+               "nearby": [{"option": "n1", "tables": ["Table 7", "Table 8"], "seats": 4, "kind": "adjacent_pair"}]})
     declined = call.say(no)
     assert declined.text == COUNTER_OFFERS["time_taken"][lang].format(
         time="19:00", times="18:30" + (" eller " if lang == SV else " or ") + "19:30")

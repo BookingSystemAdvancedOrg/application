@@ -745,8 +745,8 @@ def test_builds_canonical_slots_and_active_table_capacity(
     assert captured["date"] == "2026-09-20"
     assert captured["timezone"] == "Europe/Stockholm"
     assert captured["tables"] == [
-        {"tableId": "table-a", "seats": 2},
-        {"tableId": "table-b", "seats": 4},
+        {"tableId": "table-a", "seats": 2, "label": "2"},
+        {"tableId": "table-b", "seats": 4, "label": "1"},
     ]
     assert [
         (slot["startTime"], slot["endTime"])
@@ -803,12 +803,12 @@ def test_multi_floor_snapshot_exposes_only_bookable_table_details(
 
     assert response["statusCode"] == 200
     assert captured["tables"] == [
-        {"tableId": "ground-table", "seats": 4},
-        {"tableId": "upper-table", "seats": 6},
+        {"tableId": "ground-table", "seats": 4, "label": "1"},
+        {"tableId": "upper-table", "seats": 6, "label": "2"},
     ]
 
 
-def test_table_label_does_not_change_availability_response_shape(
+def test_a_tables_own_label_is_its_name_in_the_availability_response(
     app_and_tables,
     monkeypatch,
 ):
@@ -825,7 +825,7 @@ def test_table_label_does_not_change_availability_response_shape(
 
     assert_response(response, 200, {"accepted": True})
     assert captured["tables"] == [
-        {"tableId": "labelled-table", "seats": 4}
+        {"tableId": "labelled-table", "seats": 4, "label": "T-12"}
     ]
 
 
@@ -894,7 +894,7 @@ def test_door_kind_does_not_affect_active_table_availability(
 
     assert_response(response, 200, {"accepted": True})
     assert captured["tables"] == [
-        {"tableId": "bookable-table", "seats": 6}
+        {"tableId": "bookable-table", "seats": 6, "label": "1"}
     ]
 
 
@@ -936,7 +936,7 @@ def test_cash_register_does_not_affect_active_table_availability(
 
     assert_response(response, 200, {"accepted": True})
     assert captured["tables"] == [
-        {"tableId": "bookable-table", "seats": 6}
+        {"tableId": "bookable-table", "seats": 6, "label": "1"}
     ]
 
 
@@ -975,7 +975,7 @@ def test_floor_area_does_not_affect_active_table_availability(
 
     assert_response(response, 200, {"accepted": True})
     assert captured["tables"] == [
-        {"tableId": "bookable-table", "seats": 6}
+        {"tableId": "bookable-table", "seats": 6, "label": "1"}
     ]
 
 
@@ -1654,8 +1654,8 @@ def test_active_layout_read_retries_once_when_version_changes(
     tables = app._active_tables(LOCATION_ID, NOW)
 
     assert tables == [
-        {"tableId": "table-a", "seats": 2},
-        {"tableId": "table-b", "seats": 4},
+        {"tableId": "table-a", "seats": 2, "label": "2"},
+        {"tableId": "table-b", "seats": 4, "label": "1"},
     ]
     assert snapshot_table.get_item.call_count == 6
 
@@ -1702,10 +1702,10 @@ def test_scheduled_cutover_resolves_each_slot_to_effective_layout(
         )
         for slot in response_body(response)["slots"]
     ] == [
-        (start, 1, [{"tableId": "current-table", "seats": 2}])
+        (start, 1, [{"tableId": "current-table", "seats": 2, "label": "1"}])
         for start in half_hours("10:00", "14:00")
     ] + [
-        (start, 2, [{"tableId": "pending-table", "seats": 6}])
+        (start, 2, [{"tableId": "pending-table", "seats": 6, "label": "1"}])
         for start in half_hours("16:00", "20:00")
     ]
 
@@ -1729,11 +1729,11 @@ def test_same_table_id_preserves_capacity_from_each_effective_layout(
     }
     assert slots["14:00"]["layoutVersion"] == 1
     assert slots["14:00"]["tables"] == [
-        {"tableId": "shared-table", "seats": 2}
+        {"tableId": "shared-table", "seats": 2, "label": "1"}
     ]
     assert slots["16:00"]["layoutVersion"] == 2
     assert slots["16:00"]["tables"] == [
-        {"tableId": "shared-table", "seats": 8}
+        {"tableId": "shared-table", "seats": 8, "label": "1"}
     ]
 
 
@@ -1862,7 +1862,7 @@ def test_layout_read_retries_when_pending_identity_changes(
 
     assert resolved[0]["layoutVersion"] == 3
     assert resolved[0]["tables"] == [
-        {"tableId": "final-table", "seats": 8}
+        {"tableId": "final-table", "seats": 8, "label": "1"}
     ]
     assert snapshot_table.get_item.call_count == 8
 
@@ -2160,8 +2160,8 @@ def test_returns_all_slots_when_no_tables_are_occupied(app_and_tables):
                     "ruleName": None,
                     "layoutVersion": 1,
                     "tables": [
-                        {"tableId": "table-a", "seats": 2},
-                        {"tableId": "table-b", "seats": 4},
+                        {"tableId": "table-a", "seats": 2, "label": "2"},
+                        {"tableId": "table-b", "seats": 4, "label": "1"},
                     ],
                 }
                 for start, end in half_hours("10:00", "20:00", 120)
@@ -2219,7 +2219,7 @@ def test_occupancy_is_filtered_against_each_slots_layout(
         "extendable": False,
         "ruleName": None,
         "layoutVersion": 1,
-        "tables": [{"tableId": "current-table", "seats": 2}],
+        "tables": [{"tableId": "current-table", "seats": 2, "label": "1"}],
     }
     assert next(
         slot for slot in slots if slot["startTime"] == "16:00"
@@ -2230,7 +2230,7 @@ def test_occupancy_is_filtered_against_each_slots_layout(
         "extendable": False,
         "ruleName": None,
         "layoutVersion": 2,
-        "tables": [{"tableId": "pending-table", "seats": 6}],
+        "tables": [{"tableId": "pending-table", "seats": 6, "label": "1"}],
     }
     occupancy.query.assert_called_once()
 
@@ -2252,7 +2252,7 @@ def test_reservation_and_manual_hold_both_remove_table(
         for item in response_body(response)["slots"]
         if item["startTime"] == "18:00"
     )
-    assert slot["tables"] == [{"tableId": "table-b", "seats": 4}]
+    assert slot["tables"] == [{"tableId": "table-b", "seats": 4, "label": "1"}]
 
 
 def test_fully_occupied_slot_is_omitted(app_and_tables):
@@ -2285,10 +2285,10 @@ def test_overlapping_old_duration_hold_removes_every_overlapped_slot(
         for slot in response_body(response)["slots"]
     }
     assert slots["16:00"]["tables"] == [
-        {"tableId": "table-b", "seats": 4}
+        {"tableId": "table-b", "seats": 4, "label": "1"}
     ]
     assert slots["18:00"]["tables"] == [
-        {"tableId": "table-b", "seats": 4}
+        {"tableId": "table-b", "seats": 4, "label": "1"}
     ]
 
 
@@ -2304,8 +2304,8 @@ def test_adjacent_hold_does_not_remove_table(app_and_tables):
     first_slot = response_body(response)["slots"][0]
     assert first_slot["startTime"] == "10:00"
     assert first_slot["tables"] == [
-        {"tableId": "table-a", "seats": 2},
-        {"tableId": "table-b", "seats": 4},
+        {"tableId": "table-a", "seats": 2, "label": "2"},
+        {"tableId": "table-b", "seats": 4, "label": "1"},
     ]
 
 
@@ -2322,8 +2322,8 @@ def test_inactive_table_hold_does_not_change_availability(app_and_tables):
         if item["startTime"] == "18:00"
     )
     assert slot["tables"] == [
-        {"tableId": "table-a", "seats": 2},
-        {"tableId": "table-b", "seats": 4},
+        {"tableId": "table-a", "seats": 2, "label": "2"},
+        {"tableId": "table-b", "seats": 4, "label": "1"},
     ]
 
 
@@ -2649,3 +2649,60 @@ def test_walk_in_flag_must_be_true(app_and_tables):
     response = app.handler(make_event(query={"date": "2026-09-20", "walkIn": "yes"}), None)
 
     assert response["statusCode"] == 400
+
+
+# --- table names (docs/RESERVATIONS.md "Table names") --------------------------------------------
+
+def _two_floor_elements():
+    # The upper floor is drawn first; floors are numbered by level, so the
+    # ground floor's tables come first and the own label "Bar" wins.
+    return [
+        floor_element("floor-upper", level="1", name="Upper floor", y=Decimal("3")),
+        table_element("u1", seats="6", floorId="floor-upper"),
+        floor_element(),
+        table_element("g1", seats="4", floorId="floor-ground"),
+        table_element("g2", seats="2", floorId="floor-ground", label="Bar"),
+    ]
+
+
+def _names(slot):
+    names = {t["tableId"]: t["label"] for t in slot["tables"]}
+    names.update({u["tableId"]: u["label"] for u in slot.get("unavailable") or []})
+    return names
+
+
+def test_labels_number_tables_across_floors_in_staff_and_guest_views(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables, snapshot=snapshot_item(elements=_two_floor_elements()))
+
+    staff = response_body(app.handler(make_event(), None))
+    slot = next(s for s in staff["slots"] if s["startTime"] == "18:00")
+    assert slot["tables"] == [
+        {"tableId": "g1", "seats": 4, "label": "1"},
+        {"tableId": "g2", "seats": 2, "label": "Bar"},
+        {"tableId": "u1", "seats": 6, "label": "3"},
+    ]
+
+    guest = response_body(app.handler(make_event(query={"date": "2026-09-20", "partySize": "2"}), None))
+    slot = next(s for s in guest["slots"] if s["startTime"] == "18:00")
+    assert slot["unavailable"], slot   # the six-seat table is too large for two online
+    assert all(set(t) == {"tableId", "seats", "label"} for t in slot["tables"])
+    assert _names(slot) == {"g1": "1", "g2": "Bar", "u1": "3"}
+    assert all("label" in u for u in slot["unavailable"])
+
+
+def test_a_slot_after_a_scheduled_cutover_carries_the_pending_layouts_labels(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        current_elements=[table_element("shared-table", seats="4"), table_element("other-table", seats="2")],
+        pending_elements=[table_element("other-table", seats="2"), table_element("shared-table", seats="4")],
+    )
+
+    slots = {s["startTime"]: s for s in response_body(app.handler(make_event(), None))["slots"]}
+
+    assert slots["12:00"]["layoutVersion"] == 1
+    assert _names(slots["12:00"]) == {"shared-table": "1", "other-table": "2"}
+    assert slots["16:00"]["layoutVersion"] == 2
+    assert _names(slots["16:00"]) == {"other-table": "1", "shared-table": "2"}

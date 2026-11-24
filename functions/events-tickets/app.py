@@ -31,6 +31,8 @@ TRIGGER:
     POST   /public/ticket-transfers/{transferToken}/accept                      K21
     DELETE /public/tickets/{token}/transfers/{transferId}                       K22 (gift or listing)
 
+    Booqy Console dev twin seeder (dev only, prod answers 400): {"booqyConsole": ...}
+    becomes the owner's API Gateway event, seed routes only (shared/console_invoke.py dev_twin_entry).
     Lambda invoke (no requestContext): {"hook": ...} stripe.event, accounting.events,
     insights.events, privacy.export, privacy.erase, tenant.purge;
     EventBridge Scheduler {"job": "sweep"} every 5 minutes (hold expiry, owed
@@ -83,7 +85,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import bot_check, dynamo, events, http, orders, request_guard, site, tenant
+from shared import bot_check, console_invoke, dynamo, events, http, orders, request_guard, site, tenant
 from shared import stripe_client as stripe
 from shared.features import events_tickets as et
 from shared.features.events_tickets import media, passes, qr, series
@@ -2387,6 +2389,19 @@ ROUTES = {
 }
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py), and only for the routes it seeds with; any other
+# console call (refunds, resends, messages to guests) is refused. Everything
+# else is API Gateway, hooks and schedules as before.
+TWIN_ROUTES = frozenset({
+    "GET /locations/{locationId}/events",
+    "POST /locations/{locationId}/events",
+    "GET /locations/{locationId}/events/{eventId}",
+    "POST /locations/{locationId}/events/{eventId}/publish",
+})
+
+
+@console_invoke.dev_twin_entry(routes=TWIN_ROUTES)
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

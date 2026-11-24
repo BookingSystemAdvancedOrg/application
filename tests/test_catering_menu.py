@@ -242,3 +242,126 @@ def test_migration_skips_dishes_copied_in_the_admin(env):
     assert counts["written"] == 1 and counts["alreadyCopied"] == 1
     names = {r["name"] for r in env.res.Table(CATERING_MENU_TABLE).scan()["Items"]}
     assert names == {"Lax (egen)", "Vegetarisk buffé"}
+
+
+# --- dev twin seed calls (shared/console_invoke.py, booqy-console devtwin.py) ----------------------
+
+def seed_call(method, path, route, body=None, tenant_id=TENANT_A):
+    call = {"operator": "devtwin", "tenantId": tenant_id, "method": method, "path": path, "route": route}
+    if body is not None:
+        call["body"] = body
+    return {"booqyConsole": call}
+
+
+# What the seed saves (merged over the defaults, so a rerun can send the same body).
+TWIN_CATERING = {
+    "enabled": True, "pickup": True, "delivery": True, "minPortions": 10, "maxPortions": 300, "minGuests": 15,
+    "advanceDays": 5,
+    "leadTimeRules": [{"fromGuests": 15, "toGuests": 50, "days": 5}, {"fromGuests": 51, "toGuests": 100, "days": 8},
+                      {"fromGuests": 101, "toGuests": None, "days": 10}],
+    "deliveryArea": "Testkommun", "deliveryBands": [{"upToKm": 10, "price": 295}, {"upToKm": 25, "price": 395}],
+    "maxDeliveryKm": 25, "cleaningFee": 300, "offerValidDays": 7, "allowSimpleAcceptance": True,
+    "terms": "Testvillkor i Booqys testmiljö. Inga riktiga beställningar tas emot.",
+    "notifyEmail": "aws+roma@ithjalparna.se", "notifyPhone": "+46701740605",
+}
+SETTINGS_ROUTE = "/locations/{locationId}/catering/settings"
+TIERS_ROUTE = "/locations/{locationId}/catering/discount-tiers"
+
+
+def test_dev_twin_seed_sets_catering_up_in_dev_and_is_refused_in_prod(env, monkeypatch):
+    settings_m, tiers_m = env.m["settings"], env.m["discount-tiers"]
+    base = f"/locations/{LOC_A}/catering"
+    put = seed_call("PUT", f"{base}/settings", SETTINGS_ROUTE, TWIN_CATERING)
+    tier = seed_call("POST", f"{base}/discount-tiers", TIERS_ROUTE,
+                     {"name": "Stor beställning", "fromPortions": 50, "toPortions": None, "discountPercent": 10})
+    dish_seed = seed_call("POST", f"{base}/menu/dishes", MENU + "/dishes",
+                          {"name": "Laxtallrik", "pricePerPortion": 145, "allergens": ["fish", "milk"]})
+    loc_key = {"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"}
+    before = env.res.Table(LOCATION_TABLE).get_item(Key=loc_key)["Item"].get("cateringSettings")
+    tiers_before = body_of(tiers_m.handler({"routeKey": f"GET {TIERS_ROUTE}", "pathParameters": {"locationId": LOC_A}},
+                                           None))["tiers"]
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    for module, seed in ((settings_m, put), (tiers_m, tier), (settings_m, dish_seed)):
+        refused = module.handler(seed, None)
+        assert refused["statusCode"] == 400 and body_of(refused)["error"] == "console_refused"
+    assert env.res.Table(LOCATION_TABLE).get_item(Key=loc_key)["Item"].get("cateringSettings") == before
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    assert body_of(call(env, "GET", "/dishes"))["dishes"] == []
+
+    saved = settings_m.handler(put, None)
+    assert saved["statusCode"] == 200, saved
+    out = body_of(saved)
+    assert out["enabled"] and out["pickup"] and out["delivery"] and out["allowSimpleAcceptance"] is True
+    assert out["maxDeliveryKm"] == 25 and out["originFound"] is True and out["notifyPhone"] == "+46701740605"
+    first = settings_m.handler(dish_seed, None)
+    second = settings_m.handler(seed_call("POST", f"{base}/menu/dishes", MENU + "/dishes",
+                                          {"name": "Vegetarisk buffé", "pricePerPortion": 120,
+                                           "dietary": ["vegetarian"]}), None)
+    assert first["statusCode"] == second["statusCode"] == 201
+    ids = [body_of(first)["dishId"], body_of(second)["dishId"]]
+    package = settings_m.handler(seed_call("POST", f"{base}/menu/packages", MENU + "/packages",
+                                           {"name": "Festbuffé", "pricePerGuest": 295, "dishIds": ids,
+                                            "minGuests": 20}), None)
+    assert package["statusCode"] == 201, package
+    created_tier = tiers_m.handler(tier, None)
+    assert created_tier["statusCode"] == 201 and body_of(created_tier)["discountPercent"] == 10
+
+    public = body_of(settings_m.handler({"routeKey": f"GET {SETTINGS_ROUTE}",
+                                         "pathParameters": {"locationId": LOC_A}}, None))
+    assert public["terms"] == TWIN_CATERING["terms"] and public["minGuests"] == 15
+    assert "notifyEmail" not in public
+    menu_now = body_of(call(env, "GET", "", public=True))
+    assert len(menu_now["dishes"]) == 2 and menu_now["packages"][0]["name"] == "Festbuffé"
+    tiers_now = body_of(tiers_m.handler({"routeKey": f"GET {TIERS_ROUTE}", "pathParameters": {"locationId": LOC_A}},
+                                        None))["tiers"]
+    assert len(tiers_now) == len(tiers_before) + 1
+    # another tenant's location stays out of reach
+    foreign = seed_call("PUT", f"/locations/{LOC_A}/catering/settings", SETTINGS_ROUTE, TWIN_CATERING,
+                        tenant_id=TENANT_B)
+    assert settings_m.handler(foreign, None)["statusCode"] == 404
+
+
+def test_ordinary_jwt_catering_calls_are_unchanged_by_the_dev_twin_entry(env):
+    assert dish(env)["version"] == 1
+    assert call(env, "GET", "/dishes", role="staff_user")["statusCode"] == 403
+    def tier(role):
+        event = {"routeKey": f"POST {TIERS_ROUTE}", "pathParameters": {"locationId": LOC_A},
+                 "body": json.dumps({"name": "Mellan", "fromPortions": 20, "toPortions": 29, "discountPercent": 3})}
+        return env.m["discount-tiers"].handler(with_tenant_claims(event, role=role), None)["statusCode"]
+    assert tier("owner_user") == 201 and tier("staff_user") == 403
+
+
+def test_dev_twin_seed_reads_and_edits_dishes_by_route_template(env, monkeypatch):
+    """The reads and edits the seed makes on a rerun: dishes and packages GET,
+    a dish PUT by {dishId}, the discount tiers GET."""
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    settings_m, tiers_m = env.m["settings"], env.m["discount-tiers"]
+    base = f"/locations/{LOC_A}/catering"
+    made = dish(env)
+    listed = settings_m.handler(seed_call("GET", f"{base}/menu/dishes", MENU + "/dishes"), None)
+    assert listed["statusCode"] == 200 and [d["dishId"] for d in body_of(listed)["dishes"]] == [made["dishId"]]
+    edit = {"name": "Laxtallrik", "pricePerPortion": 155, "allergens": ["fish", "milk"], "dietary": [],
+            "version": made["version"]}
+    put = settings_m.handler(seed_call("PUT", f"{base}/menu/dishes/{made['dishId']}", MENU + "/dishes/{dishId}",
+                                       edit), None)
+    assert put["statusCode"] == 200, put
+    assert body_of(put)["version"] == 2 and body_of(put)["pricePerPortion"] == 155
+    packages = settings_m.handler(seed_call("GET", f"{base}/menu/packages", MENU + "/packages"), None)
+    assert packages["statusCode"] == 200 and body_of(packages)["packages"] == []
+    tiers = tiers_m.handler(seed_call("GET", f"{base}/discount-tiers", TIERS_ROUTE), None)
+    assert tiers["statusCode"] == 200 and isinstance(body_of(tiers)["tiers"], list)
+
+
+def test_dev_twin_entry_refuses_catering_routes_the_seed_does_not_use(env, monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    settings_m, tiers_m = env.m["settings"], env.m["discount-tiers"]
+    base = f"/locations/{LOC_A}/catering"
+    made = dish(env)
+    for module, method, path, route in (
+            (settings_m, "DELETE", f"{base}/menu/dishes/{made['dishId']}", MENU + "/dishes/{dishId}"),
+            (settings_m, "GET", f"{base}/settings", SETTINGS_ROUTE),
+            (tiers_m, "DELETE", f"{base}/discount-tiers/t1", TIERS_ROUTE + "/{tierId}"),
+            (tiers_m, "PUT", f"{base}/discount-tiers/t1", TIERS_ROUTE + "/{tierId}")):
+        refused = module.handler(seed_call(method, path, route, {"version": 1}), None)
+        assert refused["statusCode"] == 400 and body_of(refused)["error"] == "console_refused", (method, route)
+    assert [d["dishId"] for d in body_of(call(env, "GET", "/dishes"))["dishes"]] == [made["dishId"]]

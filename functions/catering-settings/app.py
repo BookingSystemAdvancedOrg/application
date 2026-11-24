@@ -28,6 +28,9 @@ TRIGGER:
         someone saved first). A dish in a package can't be deleted (409
         dish_in_package).
 
+    Booqy Console dev twin seeder (dev only, prod answers 400): {"booqyConsole": ...}
+    becomes the owner's API Gateway event, seed routes only (shared/console_invoke.py dev_twin_entry).
+
 Multi-tenant: the location decides the tenant on the public route; the
 token's tenant must own it on the owner route. Tenants without the
 "catering" feature get 404 / 403.
@@ -49,7 +52,7 @@ from decimal import Decimal
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
-from shared import dynamo, geo, http, tenant
+from shared import console_invoke, dynamo, geo, http, tenant
 from shared.reservations import normalize_phone
 
 _PATH = "/locations/{locationId}/catering/settings"
@@ -169,6 +172,21 @@ def _menu(event, method, path):
     return http.respond(200, {id_field: item_id, **item})
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py), and only for the routes it seeds with; any other
+# console call (refunds, resends, messages to guests) is refused. Everything
+# else is API Gateway, hooks and schedules as before.
+TWIN_ROUTES = frozenset({
+    "PUT /locations/{locationId}/catering/settings",
+    "GET /locations/{locationId}/catering/menu/dishes",
+    "POST /locations/{locationId}/catering/menu/dishes",
+    "PUT /locations/{locationId}/catering/menu/dishes/{dishId}",
+    "GET /locations/{locationId}/catering/menu/packages",
+    "POST /locations/{locationId}/catering/menu/packages",
+})
+
+
+@console_invoke.dev_twin_entry(routes=TWIN_ROUTES)
 def handler(event, context):
     method, path = http.route(event)
     if path != _PATH and path != _MENU and not any(path in (k, v[0]) for k, v in _KINDS.items()):

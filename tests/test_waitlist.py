@@ -524,3 +524,89 @@ def test_an_accepted_offer_keeps_the_table_labels(env):
     assert status == 200, accepted
     booking = shared_r.load(LOC_A, accepted["reservationId"])
     assert booking["status"] == "reserved" and booking["tableLabels"] == ["3"]
+
+
+# --- dev twin seed calls (shared/console_invoke.py, booqy-console devtwin.py) ----------------------
+
+def seed_call(method, path, route, body=None, tenant_id=TENANT_A, query=None):
+    call = {"operator": "devtwin", "tenantId": tenant_id, "method": method, "path": path, "route": route}
+    if query is not None:
+        call["query"] = query
+    if body is not None:
+        call["body"] = body
+    return {"booqyConsole": call}
+
+
+TWIN_WAITLIST = {"enabled": True, "holdMinutes": 10, "maxWaiting": 50, "publicJoin": True, "version": 0}
+
+
+def test_dev_twin_seed_turns_the_waitlist_on_in_dev_and_is_refused_in_prod(env, monkeypatch):
+    seed = seed_call("PUT", f"/locations/{LOC_A}/waitlist/settings", Q + "/settings", TWIN_WAITLIST)
+    loc_key = {"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"}
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    refused = env.api.handler(seed, None)
+    assert refused["statusCode"] == 400 and json.loads(refused["body"])["error"] == "console_refused"
+    assert "waitlist" not in env.res.Table(LOCATION_TABLE).get_item(Key=loc_key)["Item"]
+    assert not env.res.Table(WAITLIST_TABLE).get_item(Key=wl.settings_key(LOC_A)).get("Item")
+    assert env.api.handler({"job": "something else"}, None)["code"] == "unknown_event"
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+
+    saved = env.api.handler(seed, None)
+    assert saved["statusCode"] == 200, saved
+    assert json.loads(saved["body"]) == {**TWIN_WAITLIST, "version": 1}
+    assert env.res.Table(LOCATION_TABLE).get_item(Key=loc_key)["Item"]["waitlist"] == {"publicJoin": True}
+    row = env.res.Table(WAITLIST_TABLE).get_item(Key=wl.settings_key(LOC_A))["Item"]
+    assert row["updatedBy"] == "operator:devtwin"
+    # a rerun of the seed reads the version from the queue and gets 409 on a stale one
+    queue = env.api.handler(seed_call("GET", f"/locations/{LOC_A}/waitlist", Q), None)
+    assert queue["statusCode"] == 200 and json.loads(queue["body"])["settings"]["version"] == 1
+    assert env.api.handler(seed, None)["statusCode"] == 409
+    # another tenant's location stays out of reach
+    foreign = seed_call("PUT", f"/locations/{LOC_B}/waitlist/settings", Q + "/settings", TWIN_WAITLIST)
+    assert env.api.handler(foreign, None)["statusCode"] == 404
+
+
+def test_ordinary_jwt_waitlist_calls_are_unchanged_by_the_dev_twin_entry(env):
+    assert settings(env)[0] == 200
+    assert settings(env, as_=STAFF_A, version=1)[1]["error"] == "owner_only"
+    status, body = call(env, "GET", Q)
+    assert status == 200 and body["settings"]["publicJoin"] is True
+
+
+def test_dev_twin_seed_reads_the_queue_by_date_and_may_not_message_guests(env, monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    settings(env)
+    walk_in(env)
+    texts = len(env.sms.calls)
+    queue = env.api.handler(seed_call("GET", f"/locations/{LOC_A}/waitlist", Q, query={"date": DAY}), None)
+    assert queue["statusCode"] == 200, queue
+    body = json.loads(queue["body"])
+    assert body["settings"]["version"] == 1 and body["settings"]["publicJoin"] is True
+    assert [e["entryId"] for e in body["entries"]] == [E1]
+    bad = env.api.handler(seed_call("GET", f"/locations/{LOC_A}/waitlist", Q, query={"day": DAY}), None)
+    assert bad["statusCode"] == 400
+    # offer and seat text the guest; remove and the public routes aren't the seed's either
+    version = int(entry_row(env)["version"])
+    for action, extra in (("offer", {"tableIds": ["table-a"], "startTime": "20:00"}), ("seat", {}),
+                          ("remove", {"reason": "gick"})):
+        refused = env.api.handler(seed_call("POST", f"/locations/{LOC_A}/waitlist/{E1}/{action}",
+                                            Q + "/{entryId}/" + action, {"version": version, **extra}), None)
+        assert refused["statusCode"] == 400 and json.loads(refused["body"])["error"] == "console_refused", action
+    refused = env.api.handler(seed_call("POST", f"/public/locations/{LOC_A}/waitlist",
+                                        "/public/locations/{locationId}/waitlist",
+                                        {"entryId": E2, "name": "Test", "partySize": 2, "phone": "0701740605"}),
+                              None)
+    assert json.loads(refused["body"])["error"] == "console_refused"
+    assert entry_row(env)["status"] == "waiting" and len(env.sms.calls) == texts
+
+
+def test_expiry_job_and_hooks_still_run_in_prod_with_the_dev_twin_entry(env, monkeypatch):
+    walk_in(env)
+    offer(env)
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    env.clock.value = NOW + timedelta(minutes=11)
+    assert fire(env) == {"result": "expired"}
+    assert entry_row(env)["status"] == "expired"
+    purged = env.api.handler({"hook": "tenant.purge", "tenantId": TENANT_A, "locationIds": [LOC_A, LOC_A2],
+                              "round": 1})
+    assert purged["done"] and env.res.Table(WAITLIST_TABLE).scan()["Items"] == []

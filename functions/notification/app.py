@@ -33,7 +33,7 @@ PURPOSE:
       made with a card link by SMS (the item carries guaranteeLink: a phone
       booking by staff or the AI agent) is always texted, because that SMS
       told the guest the confirmation comes by SMS; the Nordic rule still
-      applies. Restaurant emails go to the location's email unless
+      applies. The same for a cancellation by the restaurant (cancelled_by_restaurant). Restaurant emails go to the location's email unless
       tenant.notifications.staffEmails is false.
 
     A record is sent once per notice id: when OldImage carries the same
@@ -420,7 +420,10 @@ def _reservation(record):
     # A booking made with a card link by SMS (guaranteeLink): the guest was
     # told the confirmation comes by SMS once the card is saved, so it does,
     # whatever the tenant's SMS setting. Still Nordic numbers only.
-    sms_on = settings["sms"] or (kind == "confirmed" and isinstance(new.get("guaranteeLink"), dict))
+    # A cancellation by the restaurant is always texted too: the guest must hear
+    # it at once, possibly hours before the slot, whatever the SMS setting.
+    sms_on = (settings["sms"] or kind == "cancelled_by_restaurant"
+              or (kind == "confirmed" and isinstance(new.get("guaranteeLink"), dict)))
     if phone and sms_on and not sms_allowed(phone):
         logger.info(json.dumps({"skipped": "guest_sms", "reason": "country",
                                 "reservationId": new.get("reservationId")}))

@@ -36,8 +36,9 @@ _TEXT = {
         "cancelled_by_guest.subject": "Avbokning bekräftad - {restaurant}",
         "cancelled_by_guest.lead": "Din bokning är avbokad. Hoppas vi ses en annan gång!",
         "cancelled_by_restaurant.subject": "Din bokning är avbokad - {restaurant}",
-        "cancelled_by_restaurant.lead": ("Tyvärr har restaurangen behövt avboka din bokning. "
-                                         "Hör av dig om du har frågor eller vill boka en ny tid."),
+        "cancelled_by_restaurant.lead": ("Vi är verkligen ledsna, men vi kan tyvärr inte ta emot dig vid den här tiden "
+                                         "och har därför avbokat din bokning. Du debiteras ingenting. "
+                                         "Hör gärna av dig om du har frågor eller vill boka en ny tid, vi hoppas få se dig snart."),
         "reminder.subject": "Påminnelse: bord {when} - {restaurant}",
         "reminder.lead": "En påminnelse om din bokning. Vi ser fram emot ditt besök!",
         "fee_charged.subject": "Kvitto: {fee_label} - {restaurant}",
@@ -66,7 +67,9 @@ _TEXT = {
         "sms.confirmed": "{restaurant}: {greeting}Ditt bord är bokat {when}, {guests}.",
         "sms.changed": "{restaurant}: {greeting}Din bokning är ändrad till {when}, {guests}.",
         "sms.cancelled_by_guest": "{restaurant}: {greeting}Din bokning {when} är avbokad.",
-        "sms.cancelled_by_restaurant": "{restaurant}: {greeting}Tyvärr har vi behövt avboka din bokning {when}. Kontakta oss: {contact}",
+        "sms.cancelled_by_restaurant": ("{restaurant}: {greeting}Vi är verkligen ledsna, men vi kan tyvärr inte ta emot dig {when} "
+                                        "och har därför avbokat ditt bord. Du debiteras ingenting. Vi hoppas få se dig en annan gång. "
+                                        "Frågor? {contact}"),
         "sms.reminder": "{restaurant}: {greeting}Påminnelse om ditt bord {when}, {guests}.",
         "sms.fee_charged": "{restaurant}: {greeting}{fee_label} {amount} har debiterats för bokningen {when}.",
         "sms.fee_refunded": "{restaurant}: {greeting}Vi har betalat tillbaka {refund} av avgiften för bokningen {when}.",
@@ -101,8 +104,9 @@ _TEXT = {
         "cancelled_by_guest.subject": "Cancellation confirmed - {restaurant}",
         "cancelled_by_guest.lead": "Your booking is cancelled. We hope to see you another time!",
         "cancelled_by_restaurant.subject": "Your booking is cancelled - {restaurant}",
-        "cancelled_by_restaurant.lead": ("Unfortunately the restaurant has had to cancel your booking. "
-                                         "Get in touch if you have questions or want a new time."),
+        "cancelled_by_restaurant.lead": ("We are truly sorry, but we are unable to host you at this time and have "
+                                         "cancelled your booking. You will not be charged. Get in touch if you have "
+                                         "questions or want a new time, we hope to see you soon."),
         "reminder.subject": "Reminder: table {when} - {restaurant}",
         "reminder.lead": "A reminder about your booking. We look forward to your visit!",
         "fee_charged.subject": "Receipt: {fee_label} - {restaurant}",
@@ -131,7 +135,9 @@ _TEXT = {
         "sms.confirmed": "{restaurant}: {greeting}Your table is booked {when}, {guests}.",
         "sms.changed": "{restaurant}: {greeting}Your booking is now {when}, {guests}.",
         "sms.cancelled_by_guest": "{restaurant}: {greeting}Your booking {when} is cancelled.",
-        "sms.cancelled_by_restaurant": "{restaurant}: {greeting}Unfortunately we had to cancel your booking {when}. Contact us: {contact}",
+        "sms.cancelled_by_restaurant": ("{restaurant}: {greeting}We are truly sorry, but we are unable to host you {when} "
+                                        "and have cancelled your table. You will not be charged. We hope to see you another time. "
+                                        "Questions? {contact}"),
         "sms.reminder": "{restaurant}: {greeting}Reminder of your table {when}, {guests}.",
         "sms.fee_charged": "{restaurant}: {greeting}{fee_label} {amount} has been charged for your booking {when}.",
         "sms.fee_refunded": "{restaurant}: {greeting}We have refunded {refund} of the fee for your booking {when}.",

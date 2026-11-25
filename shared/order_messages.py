@@ -8,7 +8,7 @@ guests who ordered in English.
     order_ready      SMS "ready to collect" (pickup orders only); e-mail when
                      no SMS can be sent
     order_cancelled  SMS + e-mail: cancelled by the restaurant, refunded
-    order_refunded   e-mail: the restaurant refunded (part of) the order
+    order_refunded   SMS + e-mail: the restaurant refunded (part of) the order
                      without cancelling it (amount, its message)
 
 The receipt shows the seller (legal name, organisation number, address),
@@ -35,6 +35,9 @@ _TEXT = {
         "started.lead.pickup": "Vi har börjat laga din beställning. Beräknat klar att hämta ca {ready}.",
         "started.lead.table": "Vi har börjat laga din beställning. Den serveras till {table}.",
         "sms.ready": "{restaurant}: Beställning #{number} är klar att hämta.{where}",
+        "sms.cancelled": ("{restaurant}: Tyvärr kan vi inte ta emot din beställning #{number}. "
+                          "Pengarna betalas tillbaka inom några bankdagar."),
+        "sms.refunded": "{restaurant}: {amount} har betalats tillbaka för din beställning #{number}.",
         "receipt.subject": "Kvitto beställning #{number} - {restaurant}",
         "receipt.lead.pickup": ("Tack för din beställning! Du får ett sms när restaurangen har börjat laga den "
                                 "och ett när den är klar att hämta."),
@@ -94,6 +97,9 @@ _TEXT = {
         "started.lead.pickup": "We've started on your order. Ready to collect around {ready}.",
         "started.lead.table": "We've started on your order. It will be served at {table}.",
         "sms.ready": "{restaurant}: Order #{number} is ready for pickup.{where}",
+        "sms.cancelled": ("{restaurant}: Sorry, we can't take your order #{number}. "
+                          "You will be refunded within a few business days."),
+        "sms.refunded": "{restaurant}: {amount} has been refunded for your order #{number}.",
         "receipt.subject": "Receipt order #{number} - {restaurant}",
         "receipt.lead.pickup": ("Thanks for your order! We'll text you when the restaurant starts on it "
                                 "and when it's ready to collect."),
@@ -145,10 +151,11 @@ _TEXT = {
     },
 }
 
-# Food orders get two SMS only: the kitchen started (confirmation) and
-# ready to collect. A cancelled order is an e-mail (with the refund), never
-# an SMS - cancellation SMS are for table bookings.
-SMS_NOTICES = ("order_started", "order_ready")
+# Food orders get an SMS when the kitchen started (confirmation), when the
+# order is ready to collect, and when the restaurant declines (cancels) it or
+# refunds part of it. The cancelled and refunded notices also go by e-mail
+# (the e-mail carries the amounts).
+SMS_NOTICES = ("order_started", "order_ready", "order_cancelled", "order_refunded")
 SMS_MAX = 160  # one SMS part (GSM-7) - a second part doubles the price
 
 
@@ -289,7 +296,8 @@ def staff_refund_failed(item, tenant_row, location, admin_url=None):
 
 
 def sms(kind, item, tenant_row, location, link=None):
-    """The order SMS: confirmation (kitchen started) or ready to collect.
+    """The order SMS: confirmation (kitchen started), ready to collect, declined
+    (cancelled and refunded) or refunded.
     Short and plain, one SMS part: restaurant, order number, ready time /
     table, pickup address. `link` is accepted for the caller's convenience
     and not used - the guest has it in the receipt e-mail."""
@@ -305,6 +313,10 @@ def sms(kind, item, tenant_row, location, link=None):
         "ready_at": _t(lang, "sms.ready_at", ready=ready) if ready else "",
         "where": _t(lang, "sms.where", address=address) if address else "",
     }
+    if kind in ("order_cancelled", "order_refunded"):
+        paid = (item.get("refund") or {}).get("notice") or {}
+        values["amount"] = money(paid.get("amount") or 0)
+        return _t(lang, "sms.cancelled" if kind == "order_cancelled" else "sms.refunded", **values)[:SMS_MAX]
     if kind == "order_started":
         text = _t(lang, f"sms.started.{'table' if item.get('mode') == 'table' else 'pickup'}", **values)
     else:

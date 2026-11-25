@@ -71,10 +71,10 @@ PURPOSE:
                          staff press "Påbörja"; e-mail when no SMS can be sent
       order_ready        SMS "ready to collect" - pickup orders; e-mail when
                          no SMS can be sent
-      order_refunded     e-mail only (owner refund without cancelling: amount,
-                         the restaurant's message)
-      order_cancelled    e-mail only (cancelled by the restaurant, refund amount) -
-                         cancellation SMS are for table bookings, never food orders
+      order_refunded     e-mail + SMS (owner refund without cancelling: amount,
+                         the restaurant's message in the e-mail)
+      order_cancelled    e-mail + SMS (declined or cancelled by the restaurant,
+                         refund amount in the e-mail)
       order_refund_failed  the RESTAURANT only (location e-mail, else the
                          tenant's reply-to; sent even with staff e-mails off,
                          like fee_failed): a refund came back (refund.failed),
@@ -192,6 +192,13 @@ def _table_name_of(arn):
     # arn:aws:dynamodb:<region>:<account>:table/<name>/stream/<label>
     parts = (arn or "").split(":table/", 1)
     return parts[1].split("/", 1)[0] if len(parts) == 2 else None
+
+
+def _error_code(exc):
+    """The AWS error code of a ClientError (MessageRejected = SES sandbox or an unverified address)."""
+    if isinstance(exc, ClientError):
+        return exc.response.get("Error", {}).get("Code") or "unknown"
+    return type(exc).__name__
 
 
 def _retryable(exc):
@@ -377,6 +384,9 @@ def _reservation(record):
             raise Retry from exc
         raise
     if not tenant_row or tenant_row.get("status") != "active" or not location:
+        logger.warning(json.dumps({"skipped": "notice", "reason": "inactive", "kind": kind, "tenantId": tenant_id,
+                                   "locationId": location_id, "tenantFound": bool(tenant_row),
+                                   "locationFound": bool(location)}))
         return "inactive"
     settings = _settings(tenant_row)
     base, slug = _site(tenant_id, tenant_row)
@@ -404,7 +414,7 @@ def _reservation(record):
             if _retryable(exc):
                 raise Retry from exc
             logger.error(json.dumps({"failed": "guest_email", "reservationId": new.get("reservationId"),
-                                     "error": str(exc)}))
+                                     "kind": kind, "code": _error_code(exc), "error": str(exc)}))
 
     phone = None if staff_only else new.get("customerPhone")
     # A booking made with a card link by SMS (guaranteeLink): the guest was
@@ -415,6 +425,9 @@ def _reservation(record):
         logger.info(json.dumps({"skipped": "guest_sms", "reason": "country",
                                 "reservationId": new.get("reservationId")}))
         phone = None
+    if phone and not sms_on:
+        logger.info(json.dumps({"skipped": "guest_sms", "reason": "sms_off", "kind": kind,
+                                "reservationId": new.get("reservationId")}))
     if phone and sms_on:
         try:
             _send_sms(phone, messages.guest_sms(kind, new, tenant_row, location, link), tenant_row, location_id,
@@ -508,6 +521,9 @@ def _order(record):
             raise Retry from exc
         raise
     if not tenant_row or tenant_row.get("status") != "active" or not location:
+        logger.warning(json.dumps({"skipped": "notice", "reason": "inactive", "kind": kind, "tenantId": tenant_id,
+                                   "locationId": location_id, "tenantFound": bool(tenant_row),
+                                   "locationFound": bool(location)}))
         return "inactive"
     source = _from_address(tenant_row, location)
     if kind == orders.NOTICE_REFUND_FAILED:
@@ -529,9 +545,10 @@ def _order(record):
         wants_sms = kind == orders.NOTICE_STARTED or new.get("mode") == orders.PICKUP
         wants_email = not phone  # e-mail only when no SMS can be sent
     else:
-        # Cancelled or refunded by the restaurant: the e-mail with the refund - no SMS
-        # (cancellation SMS are for table bookings only).
-        wants_sms, wants_email = False, True
+        # Declined (cancelled) or refunded by the restaurant: the e-mail with
+        # the amounts, and a short SMS so a guest who only gave a phone number
+        # (or does not read mail) still hears about it.
+        wants_sms, wants_email = True, True
     steps = []
     if wants_email and new.get("customerEmail"):
         steps.append("email")
@@ -553,8 +570,8 @@ def _order(record):
         except (BotoCoreError, ClientError) as exc:
             if not sent and _retryable(exc):
                 raise Retry from exc
-            logger.error(json.dumps({"failed": f"guest_{step}", "orderId": new.get("orderId"),
-                                     "error": str(exc)}))
+            logger.error(json.dumps({"failed": f"guest_{step}", "orderId": new.get("orderId"), "kind": kind,
+                                     "code": _error_code(exc), "error": str(exc)}))
         except Exception:  # noqa: BLE001 - never resend what already went out
             if not sent:
                 raise

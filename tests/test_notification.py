@@ -286,14 +286,16 @@ def test_english_guest_gets_english(env):
     assert "Sunday 20 September at 18:00" in sns.calls[0]["Message"]
 
 
-def test_sms_only_when_the_tenant_turned_it_on(env):
+def test_sms_only_when_the_tenant_turned_it_on(env, caplog):
     module, _, sns = env
     boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).update_item(
         Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
         UpdateExpression="REMOVE notifications")
     shared_tenant.reset_caches()
-    run(module, record(booking(), event_name="INSERT"))
+    with caplog.at_level("INFO"):
+        run(module, record(booking(), event_name="INSERT"))
     assert sns.calls == []
+    assert '"reason": "sms_off"' in caplog.text
 
 
 def test_staff_booking_does_not_email_the_restaurant(env):
@@ -329,22 +331,26 @@ def test_sms_failure_after_the_email_is_not_retried(env):
     assert len(ses.calls) == 2
 
 
-def test_permanent_email_rejection_is_logged_not_retried(env):
+def test_permanent_email_rejection_is_logged_not_retried(env, caplog):
     module, ses, sns = env
     ses.fail = ["MessageRejected"]
-    assert run(module, record(booking(), event_name="INSERT")) == {"batchItemFailures": []}
+    with caplog.at_level("ERROR"):
+        assert run(module, record(booking(), event_name="INSERT")) == {"batchItemFailures": []}
     assert len(sns.calls) == 1
+    assert '"code": "MessageRejected"' in caplog.text and '"failed": "guest_email"' in caplog.text
 
 
-def test_inactive_tenant_gets_nothing(env):
+def test_inactive_tenant_gets_nothing(env, caplog):
     module, ses, sns = env
     boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).update_item(
         Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
         UpdateExpression="SET #s = :s", ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":s": "suspended"})
     shared_tenant.reset_caches()
-    run(module, record(booking(), event_name="INSERT"))
+    with caplog.at_level("WARNING"):
+        run(module, record(booking(), event_name="INSERT"))
     assert ses.calls == [] and sns.calls == []
+    assert '"reason": "inactive"' in caplog.text
 
 
 def test_other_streams_are_acknowledged_untouched(env):

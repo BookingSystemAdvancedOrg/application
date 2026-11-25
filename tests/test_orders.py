@@ -899,14 +899,16 @@ def test_ready_without_a_nordic_phone_falls_back_to_email(env, notify):
     assert mail["Message"]["Subject"]["Data"] == "Din beställning #1 är klar att hämta - Roma Södermalm"
 
 
-def test_cancelled_order_is_an_email_with_the_refund_never_an_sms(env, notify):
+def test_declined_order_is_an_email_with_the_refund_and_a_short_sms(env, notify):
     module, ses, sns = notify
     created = place_and_pay(env)
     set_status(env, created["orderId"], "cancelled")
     module.handler({"Records": [order_record(stored(env, created["orderId"]))]}, None)
     (mail,) = ses.calls
     assert "285,50 kr" in mail["Message"]["Body"]["Text"]["Data"]
-    assert sns.calls == []  # cancellation SMS are for table bookings only
+    (sms,) = sns.calls
+    assert "avbryta" not in sms["Message"] and "#1" in sms["Message"] and "tillbaka" in sms["Message"]
+    assert len(sms["Message"]) <= 160
 
 
 def test_order_sms_stays_one_part_with_long_names():
@@ -916,8 +918,11 @@ def test_order_sms_stays_one_part_with_long_names():
     for kind in ("order_started", "order_ready"):
         text = order_messages.sms(kind, item, {}, location)
         assert len(text) <= 160 and "#123" in text
+    for kind in ("order_cancelled", "order_refunded"):
+        text = order_messages.sms(kind, item, {}, location)
+        assert len(text) <= 160 and "#123" in text
     with pytest.raises(ValueError):
-        order_messages.sms("order_cancelled", item, {}, location)
+        order_messages.sms("order_confirmed", item, {}, location)
 
 
 def test_table_order_sms_names_the_table_in_english(env, notify):

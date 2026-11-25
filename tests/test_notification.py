@@ -378,6 +378,21 @@ def _sms_off():
     shared_tenant.reset_caches()
 
 
+def test_restaurant_cancellation_is_texted_with_sms_off_and_names_the_guest(env):
+    module, _, sns = env
+    _sms_off()
+    new = booking(customerName="Anna Svensson",
+                  notice={"id": "z" * 32, "type": "cancelled_by_restaurant", "at": NOW.isoformat()})
+    run(module, record(new, old=booking(customerName="Anna Svensson")))
+    (sent,) = sns.calls
+    assert sent["PhoneNumber"] == "+46701234567"
+    assert "Hej Anna!" in sent["Message"] and "ledsna" in sent["Message"] and "debiteras ingenting" in sent["Message"]
+    sns.calls.clear()
+    nameless = booking(customerName="", notice={"id": "w" * 32, "type": "cancelled_by_restaurant", "at": NOW.isoformat()})
+    run(module, record(nameless, old=booking(customerName="")))
+    assert "Hej" not in sns.calls[0]["Message"]
+
+
 CARD_LINK = {"url": "https://restaurang.booqy.se/api/k/Ab3dE5fG7h", "page": "stripe", "by": "booqy", "sends": 1}
 
 

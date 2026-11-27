@@ -10,6 +10,8 @@ TRIGGER:
           {"date", "startTime", "tableIds"}
           or, on its own, a new end: {"endTime", "overrideRule"}
           (extend / shorten, docs/RESERVATIONS.md "Booking length")
+          A changed partySize also restamps the card guarantee's fees and
+          answers partyChange (docs/RESERVATIONS.md "Changing the party")
     POST  /locations/{locationId}/reservations/{reservationId}/payment
           {"action": "charge"}                 charge / retry the fee
           {"action": "refund", "amount": öre,  refund (owner only; amount
@@ -77,7 +79,7 @@ _EDIT = "/locations/{locationId}/reservations/{reservationId}"
 _PAYMENT = "/locations/{locationId}/reservations/{reservationId}/payment"
 _ARRIVE_EARLY = timedelta(hours=3)
 _EDIT_FIELDS = {"date", "startTime", "tableIds", "partySize", "name", "email",
-                "phone", "notes", "language", "notifyGuest", "endTime", "overrideRule"}
+                "phone", "notes", "language", "notifyGuest", "endTime", "overrideRule", "waiveCard"}
 _EXTEND_STEP = 15  # minutes (booking_rules.TIME_STEP)
 
 
@@ -139,10 +141,15 @@ def _status_update(item, new_status, actor, now, *, release=False, retake=None, 
             "TableName": r.reservation_table(),
             "Key": r.serialize(r.reservation_key(item["locationId"], item["date"], item["reservationId"])),
             "UpdateExpression": expression,
-            "ConditionExpression": "#s = :old",
+            # Version guarded: a staff edit (party restamp, tables moved) that
+            # committed after this request read the booking wins, and this
+            # request answers 409 changed_retry instead of charging or
+            # releasing from a stale copy.
+            "ConditionExpression": "#s = :old AND (attribute_not_exists(version) OR version = :v)",
             "ExpressionAttributeNames": {"#s": "status"},
             "ExpressionAttributeValues": r.serialize({
-                ":new": new_status, ":old": item["status"], ":now": r.iso(now), ":by": actor,
+                ":new": new_status, ":old": item["status"], ":v": int(item.get("version", 0)),
+                ":now": r.iso(now), ":by": actor,
                 ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
                 ":true": True if release else None, ":notice": notice,
             }),
@@ -359,6 +366,97 @@ def _extend(ctx, item, end_time, override, now):
     return new_item
 
 
+def _party_fees(ctx, item, party, now, waive):
+    """What a staff change of partySize does to the card guarantee, decided
+    from the stored booking only (never the live policy for a card already
+    on file). Returns (sets, drops, entries, log, summary):
+      card on file      the snapshot is restamped: the per-person amounts
+                        the guest accepted times the new party, same card
+      no card, grown past minPartySize (RESERVED, not a walk-in)
+                        item.cardNeeded = the amounts that will apply; the
+                        table is never touched; `waive` skips it (logged)
+      cardNeeded already there   restamped, or dropped when the party fell
+                        back under the threshold
+    Refuses (409 charge_started) once a fee charge started for the booking."""
+    old = int(item.get("partySize") or 0)
+    snap = item.get("guarantee") if isinstance(item.get("guarantee"), dict) else None
+    if snap and item.get("payment"):
+        raise r.InvalidState("charge_started")
+    if snap and item["status"] == r.PENDING and not item.get("stripePaymentMethodId"):
+        # The guest is on the card page with the OLD amounts and confirming
+        # the card never restamps: refuse rather than leave a stale snapshot.
+        raise r.InvalidState("pending_card")
+    sets, drops, entries = {}, [], []
+    log = {"previousPartySize": old, "partySize": party}
+    previous = (int(snap.get("noShowFee") or 0), int(snap.get("lateCancelFee") or 0)) if snap else (0, 0)
+    fees, currency = previous, (snap or {}).get("currency", guarantee.CURRENCY)
+    cutoff = int((snap or {}).get("cancelCutoffHours") or 0) if snap else None
+    waived = False
+    needed = item.get("cardNeeded") if isinstance(item.get("cardNeeded"), dict) else None
+    if guarantee.is_guaranteed(item):
+        new_snap = guarantee.restamp(item, party)
+        sets["guarantee"] = new_snap
+        fees = (int(new_snap["noShowFee"]), int(new_snap["lateCancelFee"]))
+        log.update({"previousNoShowFee": previous[0], "noShowFee": fees[0],
+                    "previousLateCancelFee": previous[1], "lateCancelFee": fees[1]})
+    elif item["status"] == r.RESERVED and item.get("source") != "walk_in":
+        required_now = guarantee.required(ctx.location, ctx.tenant, party)
+        if needed and waive:
+            drops.append("cardNeeded")
+            waived = True
+            entries.append(r.history_entry("guarantee_waived", ctx.sub, now))
+        elif needed:
+            if required_now:
+                sets["cardNeeded"] = guarantee.card_needed(ctx.location, party, needed.get("since") or r.iso(now))
+            else:
+                drops.append("cardNeeded")
+        elif required_now and party > old and not guarantee.required(ctx.location, ctx.tenant, old):
+            if waive:
+                waived = True
+                entries.append(r.history_entry("guarantee_waived", ctx.sub, now))
+            else:
+                sets["cardNeeded"] = guarantee.card_needed(ctx.location, party, r.iso(now))
+                entries.append(r.history_entry(
+                    "card_needed", ctx.sub, now, partySize=party, noShowFee=sets["cardNeeded"]["noShowFee"],
+                    lateCancelFee=sets["cardNeeded"]["lateCancelFee"]))
+    if "cardNeeded" in sets:
+        fees = (int(sets["cardNeeded"]["noShowFee"]), int(sets["cardNeeded"]["lateCancelFee"]))
+        currency, cutoff = sets["cardNeeded"]["currency"], int(sets["cardNeeded"]["cutoffHours"])
+    summary = {
+        "from": old, "to": party, "noShowFee": fees[0], "lateCancelFee": fees[1],
+        "previousNoShowFee": previous[0], "previousLateCancelFee": previous[1], "currency": currency,
+        "cardOnFile": bool(item.get("stripePaymentMethodId")), "cardRequired": "cardNeeded" in sets,
+        # No sender exists for a booking that already holds its table: see
+        # docs/RESERVATIONS.md "Changing the party" (blockers).
+        "cardLinkSent": False, "cardWaived": waived, "notified": False,
+    }
+    if cutoff is not None:
+        summary["cancelCutoffHours"] = cutoff
+    return sets, drops, entries, log, summary
+
+
+def _waive_card(ctx, item, now):
+    """Staff skip the missing card of a booking that grew past the threshold:
+    item.cardNeeded is cleared (logged), version guarded."""
+    entry = r.history_entry("guarantee_waived", ctx.sub, now)
+    new_item = {k: v for k, v in item.items() if k != "cardNeeded"}
+    version = int(item.get("version", 0))
+    new_item.update({"updatedAt": r.iso(now), "updatedBy": ctx.sub, "version": version + 1,
+                     "history": (item.get("history") or []) + [entry]})
+    r.transact([{"Update": {
+        "TableName": r.reservation_table(),
+        "Key": r.serialize(r.reservation_key(item["locationId"], item["date"], item["reservationId"])),
+        "UpdateExpression": "SET updatedAt = :now, updatedBy = :by, version = :next, "
+                            "history = list_append(if_not_exists(history, :empty), :entry) REMOVE cardNeeded",
+        "ConditionExpression": "#s = :status AND (attribute_not_exists(version) OR version = :v)",
+        "ExpressionAttributeNames": {"#s": "status"},
+        "ExpressionAttributeValues": r.serialize({
+            ":now": r.iso(now), ":by": ctx.sub, ":next": version + 1, ":entry": [entry], ":empty": [],
+            ":status": item["status"], ":v": version}),
+    }}])
+    return new_item
+
+
 def _edit(event, ctx, item):
     data = http.body(event, allowed=_EDIT_FIELDS)
     notify = r.notify_flag(data)
@@ -366,11 +464,16 @@ def _edit(event, ctx, item):
     override = data.pop("overrideRule", False)
     if not isinstance(override, bool):
         raise ValueError("overrideRule must be true or false")
+    waive = data.pop("waiveCard", False)
+    if not isinstance(waive, bool):
+        raise ValueError("waiveCard must be true or false")
     if "endTime" in data:
         if set(data) != {"endTime"}:
             raise ValueError("endTime is changed on its own")
         new_item = _extend(ctx, item, data["endTime"], override, r.now_utc())
         return r.staff_view(new_item or item)
+    if not data and waive and isinstance(item.get("cardNeeded"), dict):
+        return r.staff_view(_waive_card(ctx, item, r.now_utc()))
     if not data:
         raise ValueError("nothing to update")
     now = r.now_utc()
@@ -465,7 +568,15 @@ def _edit(event, ctx, item):
     if not changes:
         return r.staff_view(item)
 
-    entry = r.history_entry("edited", ctx.sub, now, fields=sorted(changes))
+    party_change, party_entries = None, []
+    if "partySize" in changes:
+        sets, drops, party_entries, log, party_change = _party_fees(ctx, item, party, now, waive)
+        new_item.update(sets)
+        for key in drops:
+            new_item.pop(key, None)
+    else:
+        log = {}
+    entry = r.history_entry("edited", ctx.sub, now, fields=sorted(changes), **log)
     new_item.update(changes)
     if restamp:
         if table_labels:
@@ -477,19 +588,27 @@ def _edit(event, ctx, item):
     new_item.pop("notice", None)
     if {"date", "startTime"} & set(changes):
         new_item.pop("reminderSentAt", None)  # a new time earns a new reminder
-    if notify and ({"date", "startTime"} & set(changes)) and r.can_be_notified(new_item):
-        # The guest hears about a new date/time (not about a table swap).
+    # The guest hears about a new date/time or party (not about a table swap):
+    # one notice, whatever mix changed. A party change of a booking not
+    # reserved (pending, arrived) is no news to the guest.
+    party_news = party_change is not None and item["status"] == r.RESERVED
+    if notify and (({"date", "startTime"} & set(changes)) or party_news) and r.can_be_notified(new_item):
         new_item["notice"] = r.notice(r.NOTICE_CHANGED, now)
+        if party_change:
+            party_change["notified"] = True
     for field in ("customerEmail", "customerPhone", "notes"):
         if new_item.get(field) is None:
             new_item.pop(field, None)
     version = int(item.get("version", 0))
     new_item.update({"updatedAt": r.iso(now), "updatedBy": ctx.sub, "version": version + 1,
-                     "history": (item.get("history") or []) + [entry]})
+                     "history": (item.get("history") or []) + [entry] + party_entries})
     new_key = r.reservation_key(location_id, new_item["date"], item["reservationId"])
     new_item.update(new_key)
+    condition = "#s = :status AND (attribute_not_exists(version) OR version = :v)"
+    if party_change and isinstance(item.get("guarantee"), dict):
+        condition += " AND attribute_not_exists(payment)"  # a fee charge starting meanwhile wins
     guard = {
-        "ConditionExpression": "#s = :status AND (attribute_not_exists(version) OR version = :v)",
+        "ConditionExpression": condition,
         "ExpressionAttributeNames": {"#s": "status"},
         "ExpressionAttributeValues": r.serialize({":status": item["status"], ":v": version}),
     }
@@ -519,7 +638,10 @@ def _edit(event, ctx, item):
             "ExpressionAttributeValues": r.serialize({":d": new_item["date"], ":ttl": new_item["ttl"]}),
         }})
     r.transact(ops)
-    return r.staff_view(new_item)
+    view = r.staff_view(new_item)
+    if party_change:
+        view["partyChange"] = party_change
+    return view
 
 
 def _close_card_page(item):

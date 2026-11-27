@@ -4069,6 +4069,22 @@ paths:
         walk-in (running and imminent slots allowed, same day only). Keeping
         the booking's own date and time (new tables, more guests) works up to
         and during the visit.
+
+        A changed `partySize` also settles the card guarantee in the SAME
+        version-guarded write (a concurrent edit or a charge starting loses
+        with 409 `changed_retry`) and the 200 answer gains `partyChange`:
+        a booking with a card keeps it and its `guarantee` is restamped
+        (the per-person amounts the guest accepted times the new party,
+        increase or decrease); 409 `charge_started` once a no-show or
+        late-cancel charge started or succeeded, 409 `pending_card` for a
+        pending booking with a snapshot and no card yet. A booking WITHOUT a card
+        whose party grew past the location's minPartySize keeps its table
+        and gets `cardNeeded` (the amounts that will apply); `waiveCard`
+        skips that (history `guarantee_waived`), alone it clears an existing `cardNeeded`. No card link is sent yet
+        (`partyChange.cardLinkSent` is always false). The guest gets the
+        `changed` notice (also for a party-only change, with the no-show
+        fee sentence when the booking has fees) unless `notifyGuest` is
+        false. A repeated identical PATCH changes nothing.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -4264,6 +4280,13 @@ paths:
               properties:
                 acceptFee:
                   type: boolean
+                fee:
+                  type: integer
+                  minimum: 0
+                  description: |
+                    Optional: the fee in öre the guest was shown. When the
+                    current fee differs (staff changed the party meanwhile)
+                    the answer is 409 `fee_applies` again with the new amount.
       responses:
         '200':
           description: The cancelled booking.
@@ -9732,6 +9755,48 @@ components:
             table); without it the card the policy asks for is asked.
             `waived`: book without the card the policy asks for (staff decision, history guarantee_waived).
 
+    PartyChange:
+      type: object
+      description: |
+        Response only, on the PATCH answer when `partySize` changed. All amounts are in öre
+        (the unit of `guarantee.noShowFee` / `lateCancelFee`; kronor = amount / 100), for the whole
+        party: with a card the restamped snapshot, without a card the `cardNeeded` amounts that will
+        apply, else 0.
+      required: [from, to, noShowFee, lateCancelFee, previousNoShowFee, previousLateCancelFee, currency,
+                 cardOnFile, cardRequired, cardLinkSent, cardWaived, notified]
+      properties:
+        from:
+          type: integer
+        to:
+          type: integer
+        noShowFee:
+          type: integer
+        lateCancelFee:
+          type: integer
+        previousNoShowFee:
+          type: integer
+        previousLateCancelFee:
+          type: integer
+        currency:
+          type: string
+        cancelCutoffHours:
+          type: integer
+          description: Hours before the start after which cancelling costs; absent without fees.
+        cardOnFile:
+          type: boolean
+        cardRequired:
+          type: boolean
+          description: The party grew past the card threshold and the booking has no card (see `cardNeeded`).
+        cardLinkSent:
+          type: boolean
+          description: Always false for now; no card link can be sent to a booking that already holds its table.
+        cardWaived:
+          type: boolean
+          description: Staff sent `waiveCard` and the threshold was crossed.
+        notified:
+          type: boolean
+          description: The guest gets a `changed` notice (false with notifyGuest false or no contact details).
+
     ReservationUpdateRequest:
       type: object
       additionalProperties: false
@@ -9768,7 +9833,13 @@ components:
           enum: [sv, en]
         notifyGuest:
           type: boolean
-          description: Tell the guest about a new date/time (default true). Table-only changes never notify.
+          description: Tell the guest about a new date/time or party size (default true). Table-only changes never notify.
+        waiveCard:
+          type: boolean
+          description: |
+            With a `partySize` that grows a booking without a card past the
+            location's minPartySize: do not require a card (no `cardNeeded`,
+            history `guarantee_waived`). Ignored otherwise; not an edit on its own.
         endTime:
           type: string
           pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
@@ -9880,6 +9951,36 @@ components:
           description: The card that secures the booking (card, Apple Pay or Google Pay), once saved.
         guarantee:
           $ref: '#/components/schemas/GuaranteeSnapshot'
+        cardNeeded:
+          type: object
+          description: |
+            Set when staff grew the party past the location's minPartySize on a booking WITHOUT a card
+            (the guest keeps the table, status stays reserved): the amounts that will apply once the
+            guest has a card. Dropped when the party falls back under the threshold. Amounts in öre.
+          properties:
+            since:
+              type: string
+              format: date-time
+            partySize:
+              type: integer
+            noShowFee:
+              type: integer
+              description: Öre, the whole party.
+            lateCancelFee:
+              type: integer
+              description: Öre, the whole party.
+            currency:
+              type: string
+            cutoffHours:
+              type: integer
+            noShowFeePerPerson:
+              type: integer
+              description: Kronor per guest.
+            lateCancelFeePerPerson:
+              type: integer
+              description: Kronor per guest.
+        partyChange:
+          $ref: '#/components/schemas/PartyChange'
         payment:
           $ref: '#/components/schemas/ReservationPayment'
         pendingExpiresAt:

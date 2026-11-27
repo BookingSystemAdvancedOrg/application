@@ -177,6 +177,44 @@ def snapshot(location, party_size):
     }
 
 
+def _per_person_ore(snap, party_size, total_key, per_person_key):
+    """Öre per guest of a stored snapshot: its per-person kronor, else the
+    stored total divided by the party it was made for."""
+    per_person = snap.get(per_person_key)
+    if per_person is not None:
+        return int(per_person) * 100
+    return int(snap.get(total_key) or 0) // max(int(party_size or 1), 1)
+
+
+def restamp(item, party_size):
+    """The booking's snapshot for another party size (staff changed it): the
+    SAME per-person amounts and cutoff the guest accepted, times the new
+    party. Never reads the live policy. Used in the same version-guarded
+    write that changes the party; the card stays."""
+    snap = item["guarantee"]
+    old = int(item.get("partySize") or 1)
+    out = dict(snap)
+    for total_key, per_person_key in (("noShowFee", "noShowFeePerPerson"),
+                                      ("lateCancelFee", "lateCancelFeePerPerson")):
+        ore = _per_person_ore(snap, old, total_key, per_person_key)
+        out[total_key] = ore * party_size
+        if per_person_key not in out and ore % 100 == 0:
+            out[per_person_key] = ore // 100
+    return out
+
+
+def card_needed(location, party_size, since):
+    """item.cardNeeded: a booking that grew past the card threshold has no
+    card yet; the amounts that WILL apply once it has one (the live policy,
+    as snapshot() would stamp it for this party)."""
+    snap = snapshot(location, party_size)
+    return {"since": since, "partySize": party_size, "noShowFee": snap["noShowFee"],
+            "lateCancelFee": snap["lateCancelFee"], "currency": snap["currency"],
+            "cutoffHours": snap["cancelCutoffHours"],
+            "noShowFeePerPerson": snap["noShowFeePerPerson"],
+            "lateCancelFeePerPerson": snap["lateCancelFeePerPerson"]}
+
+
 def is_guaranteed(item):
     return bool(item.get("stripePaymentMethodId") and item.get("stripeCustomerId")
                 and item.get("stripeAccountId") and isinstance(item.get("guarantee"), dict))

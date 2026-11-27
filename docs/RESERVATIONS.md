@@ -238,6 +238,55 @@ fee fails (`fee_failed`). Off-session charges that need 3-D Secure fail as
 `authentication_required` - the restaurant settles those with the guest
 (a pay-by-link flow is a later addition).
 
+### Changing the party (staff)
+
+`PATCH .../reservations/{r}` with a new `partySize` settles the guarantee
+in the same version-guarded write as the party (and tables):
+
+| Booking | Result |
+|---|---|
+| Card on file | `guarantee` restamped: the stored per-person amounts (else the old totals / old party) times the new party, same currency and cutoff, never the live policy; the same card is charged later with the new amount. Increase and decrease alike, also below minPartySize (no refund logic). |
+| Charge already started or done (`payment` set) | 409 `charge_started`, nothing changes. A charge that starts meanwhile loses: 409 `changed_retry`. |
+| Pending, snapshot but no card yet | 409 `pending_card`, nothing changes: the guest sees the old amounts on the card page and confirming never restamps. Cancel and rebook, or wait for the card. |
+| No card, party grew past minPartySize (reserved, not a walk-in, policy on and Stripe ready) | the change goes through and the guest keeps the table; `cardNeeded` = {since, partySize, noShowFee, lateCancelFee (öre), currency, cutoffHours, per-person kr}. `waiveCard: true` skips it (history `guarantee_waived`), also on its own to clear an existing `cardNeeded`. Falling back under the threshold drops it. |
+| Otherwise | nothing about fees |
+
+History `edited` carries previousPartySize/partySize and, with a card,
+previousNoShowFee/noShowFee and previousLateCancelFee/lateCancelFee; a new
+`cardNeeded` adds a `card_needed` entry. The answer is the booking plus
+`partyChange` (docs/openapi.yaml PartyChange, amounts in öre). The guest gets
+the `changed` notice (once, also when date/time changed in the same request,
+and for a party-only change of a reserved booking) unless `notifyGuest` is
+false; its SMS and e-mail add "Avgift vid uteblivet besök: 800 kr." (en:
+"No-show fee: 800 kr.") only when the card is on file (a `cardNeeded`
+booking has no card, so no fee that could be charged is stated).
+A repeated identical PATCH writes nothing and notifies nobody.
+
+A pending booking (card not added yet) keeps the fees the guest is shown on
+the card page; a party change is refused (`pending_card`, above).
+
+Every other writer of the booking is version guarded too: a status change
+(no-show with its fee, cancel by staff) and the guest's cancel lose to an
+edit that committed after they read the booking (409 `changed_retry`), so a
+charge or a release never uses a stale amount or stale tables. The guest's
+late-cancel consent can carry the amount shown (`fee`, öre): a different
+current fee answers 409 `fee_applies` again.
+
+**Card link for `cardNeeded`: not built.** The existing card link
+(create-pending-reservation) belongs to a NEW booking: it needs status
+pending, a `/k/` short link that only redirects pending bookings (a reserved
+one is answered "booked"), the confirm path (`confirm_if_ready`, the
+`setup_intent.succeeded` webhook) only accepts pending bookings, and the
+SMS goes out through `lambda:InvokeFunction` on notification:live, which
+mark-arrived has neither IAM nor `NOTIFICATION_FUNCTION_NAME` for. Moving
+the booking back to pending would release the table on expiry, so it is
+not done. `partyChange.cardLinkSent` is therefore always false and no
+link is ever sent or resent for a reserved booking; staff
+collect the card themselves (or waive). Building it needs: a
+`kind: card_needed` Checkout/SetupIntent (metadata purpose) completing a
+RESERVED booking in the webhook, a /k/ branch for it, and the SMS
+permission on mark-arrived (an infrastructure and IAM change).
+
 ### Phone bookings
 
 A phone booking (`POST .../reservations/manual`, `source: phone`, the

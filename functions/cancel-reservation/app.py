@@ -50,10 +50,13 @@ _PATH = "/locations/{locationId}/reservations/{reservationId}/cancel"
 def _cancel(event):
     location_id = http.path_id(event, "locationId")
     ctx = tenant.for_public(location_id, feature="reservations")
-    data = http.body(event, allowed={"acceptFee"}, required=False) or {}
+    data = http.body(event, allowed={"acceptFee", "fee"}, required=False) or {}
     accept_fee = data.get("acceptFee", False)
     if not isinstance(accept_fee, bool):
         raise ValueError("acceptFee must be true or false")
+    quoted = data.get("fee")
+    if quoted is not None and (isinstance(quoted, bool) or not isinstance(quoted, int) or quoted < 0):
+        raise ValueError("fee must be a whole number of öre")
     item = r.load(location_id, http.path_id(event, "reservationId"))
     if not manage_link.matches(item, http.header(event, "x-manage-token")):
         raise r.NotFound
@@ -65,7 +68,9 @@ def _cancel(event):
     if r.parse_iso(item["bookedFor"]) <= now:
         raise r.InvalidState("already_started")
     fee = guarantee.late_cancel_fee(item, now) if item["status"] == r.RESERVED else 0
-    if fee and not accept_fee:
+    # Consent covers the amount the guest was shown: staff may have changed
+    # the party (and so the fee) since the quote, then the guest is asked again.
+    if fee and (not accept_fee or (quoted is not None and quoted != fee)):
         return http.respond(409, {"error": "fee_applies", "fee": fee,
                                   "currency": item["guarantee"].get("currency", "sek")})
 
@@ -83,10 +88,10 @@ def _cancel(event):
                 "UpdateExpression": "SET #s = :new, updatedAt = :now, updatedBy = :by, "
                                     "cancelledAt = :now, notice = :notice, history = list_append(if_not_exists(history, :empty), :entry), "
                                     "version = if_not_exists(version, :zero) + :one REMOVE pendingExpiresAt",
-                "ConditionExpression": "#s = :old",
+                "ConditionExpression": "#s = :old AND (attribute_not_exists(version) OR version = :v)",
                 "ExpressionAttributeNames": {"#s": "status"},
                 "ExpressionAttributeValues": r.serialize({
-                    ":new": r.CANCELLED_BY_GUEST, ":old": item["status"], ":now": r.iso(now),
+                    ":new": r.CANCELLED_BY_GUEST, ":old": item["status"], ":v": int(item.get("version", 0)), ":now": r.iso(now),
                     ":by": "guest", ":notice": notice, ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
                 }),
             }

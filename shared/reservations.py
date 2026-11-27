@@ -596,6 +596,7 @@ _STAFF_FIELDS = (
     "customerName", "customerEmail", "customerPhone", "notes", "language",
     "marketingOptIn", "source", "status", "createdAt", "createdBy", "updatedAt",
     "updatedBy", "history", "guarantee", "payment", "pendingExpiresAt", "extendedMinutes",
+    "cardNeeded",
 )
 
 

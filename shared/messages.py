@@ -74,6 +74,7 @@ _TEXT = {
         "sms.fee_charged": "{restaurant}: {greeting}{fee_label} {amount} har debiterats för bokningen {when}.",
         "sms.fee_refunded": "{restaurant}: {greeting}Vi har betalat tillbaka {refund} av avgiften för bokningen {when}.",
         "sms.manage": "Se/avboka: {link}",
+        "fee.sentence": "Avgift vid uteblivet besök: {amount}.",
         "sms.greeting": "Hej {first}! ",
         # The link is short and plain (shared/short_link.py); two SMS parts with the fees.
         "sms.guarantee_link": ("{restaurant}: Ditt bord {when}, {guests}, hålls i {minutes} minuter. "
@@ -142,6 +143,7 @@ _TEXT = {
         "sms.fee_charged": "{restaurant}: {greeting}{fee_label} {amount} has been charged for your booking {when}.",
         "sms.fee_refunded": "{restaurant}: {greeting}We have refunded {refund} of the fee for your booking {when}.",
         "sms.manage": "View/cancel: {link}",
+        "fee.sentence": "No-show fee: {amount}.",
         "sms.greeting": "Hi {first}! ",
         "sms.guarantee_link": ("{restaurant}: Your table {when}, {guests}, is held for {minutes} minutes. "
                                "Add a card for your booking: {link} Booked once the card is added. "
@@ -186,6 +188,19 @@ def _refund(item):
     notice = (item.get("payment") or {}).get("refundNotice") or {}
     return money(notice.get("amount") or 0), notice.get("reason")
 _WITH_LINK = ("confirmed", "changed", "reminder")
+
+
+def fee_sentence(item, lang=None):
+    """One sentence with the no-show fee that applies to the booking now (the
+    snapshot of a booking whose card is on file), for the notice that the
+    booking changed. "" = no fee. A booking that still needs a card
+    (item.cardNeeded) has no fee that could be charged, so none is stated."""
+    lang = lang or _lang(item)
+    snap = item.get("guarantee")
+    if not (item.get("stripePaymentMethodId") and isinstance(snap, dict)):
+        return ""
+    fee = int(snap.get("noShowFee") or 0)
+    return _t(lang, "fee.sentence", amount=money(fee)) if fee else ""
 
 
 def _lang(item):
@@ -356,6 +371,8 @@ def guest_email(kind, item, tenant_row, location, link):
     subject = _t(lang, f"{kind}.subject", restaurant=name, when=when(item, lang), fee_label=fee_label)
     lead = _t(lang, f"{kind}.lead", amount=amount, fee_label_lower=fee_label.lower(), restaurant=name,
               refund=refund_text)
+    if kind == "changed" and fee_sentence(item, lang):
+        lead += " " + fee_sentence(item, lang)
     if kind == "fee_charged":
         rows.append((_t(lang, "amount"), amount))
     if kind == "fee_refunded":
@@ -456,6 +473,8 @@ def guest_sms(kind, item, tenant_row, location, link):
               guests=_guests(item, lang),
               contact=contact_line(tenant_row, location) or name, fee_label=fee_label, amount=amount,
               refund=_refund(item)[0])
+    if kind == "changed" and fee_sentence(item, lang):
+        text += " " + fee_sentence(item, lang)
     if link and kind in _WITH_LINK:
         text += " " + _t(lang, "sms.manage", link=link)
     return text

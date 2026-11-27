@@ -286,8 +286,9 @@ def test_english_guest_gets_english(env):
     assert "Sunday 20 September at 18:00" in sns.calls[0]["Message"]
 
 
-def test_sms_only_when_the_tenant_turned_it_on(env, caplog):
+def test_sms_only_when_the_tenant_turned_it_on(env, caplog, monkeypatch):
     module, _, sns = env
+    monkeypatch.setenv("ENVIRONMENT", "stage")      # dev always texts booking notices
     boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).update_item(
         Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
         UpdateExpression="REMOVE notifications")
@@ -360,8 +361,9 @@ def test_other_streams_are_acknowledged_untouched(env):
     assert ses.calls == []
 
 
-def test_phone_only_booking_without_sms_sends_nothing_and_succeeds(env):
+def test_phone_only_booking_without_sms_sends_nothing_and_succeeds(env, monkeypatch):
     module, ses, sns = env
+    monkeypatch.setenv("ENVIRONMENT", "stage")
     boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).update_item(
         Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
         UpdateExpression="SET notifications = :n", ExpressionAttributeValues={":n": {"sms": False}})
@@ -393,15 +395,28 @@ def test_restaurant_cancellation_is_texted_with_sms_off_and_names_the_guest(env)
     assert "Hej" not in sns.calls[0]["Message"]
 
 
+def test_dev_texts_booking_notices_with_sms_off_but_not_reminders(env, monkeypatch):
+    module, _, sns = env
+    _sms_off()
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    run(module, record(booking(), event_name="INSERT"))
+    assert len(sns.calls) == 1
+    sns.calls.clear()
+    item = booking(notice={"id": "d" * 32, "type": "reminder", "at": NOW.isoformat()})
+    run(module, record(item, old=booking()))
+    assert sns.calls == []
+
+
 CARD_LINK = {"url": "https://restaurang.booqy.se/api/k/Ab3dE5fG7h", "page": "stripe", "by": "booqy", "sends": 1}
 
 
 @pytest.mark.parametrize("by", ["booqy", "caller"])
-def test_card_link_confirmation_is_texted_with_sms_off(env, by):
+def test_card_link_confirmation_is_texted_with_sms_off(env, by, monkeypatch):
     """The card link SMS told the guest the confirmation comes by SMS once
     the card is saved (staff or AI agent booking): it does, whatever the
     tenant's SMS setting. Other notices of that booking follow the setting."""
     module, ses, sns = env
+    monkeypatch.setenv("ENVIRONMENT", "stage")
     _sms_off()
     item = booking(source="phone", customerEmail=None, guaranteeLink={**CARD_LINK, "by": by},
                    stripePaymentMethodId="pm_phone")

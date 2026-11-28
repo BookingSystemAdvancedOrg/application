@@ -77,8 +77,12 @@ fi
 for site in $SMOKE_SITES; do
   name="${site%%=*}" url="${site#*=}"
   check "$name" "${url%/}/" 200 'id="root"' || continue
-  # first <script src="..."> in index.html (Vite: /assets/index-<hash>.js)
-  src=$(grep -o -E '<script[^>]+src="[^"]+"' "$body" | head -1 | sed -E 's/.*src="([^"]+)".*/\1/')
+  # the script bundle in index.html (Vite: /assets/index-<hash>.js)
+  # prefer the Vite module bundle: index.html can load small classic scripts (theme.v2.js) first
+  scripts=$(grep -o -E '<script[^>]+src="[^"]+"' "$body")
+  tag=$(printf '%s\n' "$scripts" | grep -E 'type="module"|src="[^"]*/assets/' | head -1)
+  [ -n "$tag" ] || tag=$(printf '%s\n' "$scripts" | head -1)
+  src=$(printf '%s\n' "$tag" | sed -E 's/.*src="([^"]+)".*/\1/')
   if [ -z "$src" ]; then
     failures+=("$name: index.html has no <script src> ($url)")
     report+=("FAILED  $name: index.html has no script bundle")

@@ -15,7 +15,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from email.header import Header
+from email.header import Header, decode_header, make_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, make_msgid
@@ -75,6 +75,14 @@ def build_mime(*, to, subject, text, html_body, sender, reply_to, unsubscribe_ur
     return msg
 
 
+def _plain(address):
+    """The sender as people read it: an RFC 2047 encoded display name is decoded for the dev outbox."""
+    try:
+        return str(make_header(decode_header(address)))
+    except Exception:
+        return address
+
+
 def send(*, to, subject, text, html_body, sender, reply_to=None, unsubscribe_url=None, kind="marketing"):
     """Sends one email. Returns the SES message id (or the outbox id in dev)."""
     bucket = _outbox_bucket()
@@ -82,7 +90,7 @@ def send(*, to, subject, text, html_body, sender, reply_to=None, unsubscribe_url
         now = datetime.now(timezone.utc)
         message_id = f"{_INVERT_MS - int(now.timestamp() * 1000):013d}-{uuid.uuid4().hex[:12]}"
         body = {"id": message_id, "at": now.isoformat().replace("+00:00", "Z"), "channel": "email",
-                "kind": kind, "to": to, "from": sender, "replyTo": [reply_to] if reply_to else [],
+                "kind": kind, "to": to, "from": _plain(sender), "replyTo": [reply_to] if reply_to else [],
                 "subject": subject, "text": text, "html": html_body, "listUnsubscribe": unsubscribe_url}
         _client("s3").put_object(Bucket=bucket, Key=f"outbox/{message_id}.json",
                                  Body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
